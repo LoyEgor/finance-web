@@ -63,6 +63,12 @@ summary {
     user-select: none;
 }
 
+@media (max-width: 600px) {
+    summary {
+        font-size: 14px;
+    }
+}
+
 summary:hover {
     background-color: #f8fafc;
 }

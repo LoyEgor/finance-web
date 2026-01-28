@@ -1234,9 +1234,29 @@ function renderPortfolio(data, comparison = null) {
         listContainer.appendChild(section);
     });
 
-    // Update grand total display
-    document.getElementById('grand-total-display').innerText =
-        grandTotal.toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
+    // Format grand total string
+    const grandTotalStr = grandTotal.toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
+
+    // Plugin to draw text in center of the doughnut (chartArea) with specified font size
+    const centerTextPlugin = {
+        id: 'centerText',
+        beforeDraw: function (chart) {
+            const ctx = chart.ctx;
+            const { top, bottom, left, right } = chart.chartArea;
+            const centerX = (left + right) / 2;
+            const centerY = (top + bottom) / 2;
+
+            ctx.save();
+            const fontSize = 16; // px
+            ctx.font = `800 ${fontSize}px monospace`;
+            ctx.fillStyle = '#2d3748';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            ctx.fillText(grandTotalStr, centerX, centerY);
+            ctx.restore();
+        }
+    };
 
     // Create Chart.js doughnut chart
     const ctx = chartCanvas.getContext('2d');
@@ -1251,6 +1271,7 @@ function renderPortfolio(data, comparison = null) {
                 hoverOffset: 6
             }]
         },
+        plugins: [centerTextPlugin],
         options: {
             responsive: true,
             maintainAspectRatio: false,
