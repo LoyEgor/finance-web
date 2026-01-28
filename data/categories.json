@@ -1,0 +1,27 @@
+{
+    "safe": {
+        "title": "1. Защитные",
+        "color": "#ecc94b",
+        "order": 1
+    },
+    "stocks": {
+        "title": "2. Акции",
+        "color": "#9f7aea",
+        "order": 2
+    },
+    "usd": {
+        "title": "3. Доллары и эквивалент",
+        "color": "#48bb78",
+        "order": 3
+    },
+    "crypto": {
+        "title": "4. Криптовалюта",
+        "color": "#ed8936",
+        "order": 4
+    },
+    "bots": {
+        "title": "5. Копитрейдинг и Боты",
+        "color": "#4299e1",
+        "order": 5
+    }
+}

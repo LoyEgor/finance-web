@@ -1,0 +1,99 @@
+# ===========================================
+# OS Generated Files
+# ===========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ===========================================
+# IDE / Editors
+# ===========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.project
+.settings/
+*.code-workspace
+
+# ===========================================
+# Node.js (if you add npm later)
+# ===========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+.npm
+.yarn/
+
+# ===========================================
+# Build / Dist
+# ===========================================
+dist/
+build/
+out/
+.cache/
+*.min.js
+*.min.css
+
+# ===========================================
+# Environment / Secrets
+# ===========================================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets.json
+config.local.json
+
+# ===========================================
+# Logs
+# ===========================================
+logs/
+*.log
+
+# ===========================================
+# Temporary Files
+# ===========================================
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# ===========================================
+# AI / Coding Assistants
+# ===========================================
+.gemini/
+.cursor/
+.copilot/
+.aider*
+
+# ===========================================
+# Archives
+# ===========================================
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# ===========================================
+# Private Data
+# ===========================================
+# Ignore all JSON files in data/ (User Portfolio Data)
+data/*.json
+
+# Allow categories.json (Configuration/Structure)
+!data/categories.json

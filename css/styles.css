@@ -1,0 +1,886 @@
+/* ===========================================
+   INVESTMENT PORTFOLIO TRACKER - STYLES
+   =========================================== */
+
+/* Base */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #f7fafc;
+    color: #2d3748;
+    padding: 20px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+h2 {
+    text-align: center;
+    margin-bottom: 20px;
+    color: #1a202c;
+}
+
+/* ===========================================
+   Chart Container
+   =========================================== */
+.chart-container {
+    background: white;
+    padding: 20px;
+    border-radius: 16px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    margin-bottom: 25px;
+    position: relative;
+    height: 320px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* ===========================================
+   Category Blocks (Accordion)
+   =========================================== */
+.category-block {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    margin-bottom: 12px;
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+}
+
+details {
+    width: 100%;
+}
+
+summary {
+    padding: 12px 15px;
+    cursor: pointer;
+    background-color: #fff;
+    font-weight: 600;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    list-style: none;
+    transition: background-color 0.2s;
+    user-select: none;
+}
+
+summary:hover {
+    background-color: #f8fafc;
+}
+
+summary::-webkit-details-marker {
+    display: none;
+}
+
+/* Custom arrow */
+summary::after {
+    content: '+';
+    font-size: 18px;
+    color: #a0aec0;
+    margin-left: 10px;
+    width: 20px;
+    text-align: center;
+}
+
+details[open] summary::after {
+    content: '−';
+    color: #4a5568;
+}
+
+/* ===========================================
+   Table Content
+   =========================================== */
+.details-content {
+    border-top: 1px solid #edf2f7;
+    background-color: #ffffff;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+td {
+    padding: 10px 15px;
+    border-bottom: 1px solid #edf2f7;
+    vertical-align: middle;
+}
+
+tr:last-child td {
+    border-bottom: none;
+}
+
+/* Amount styling: monospace, no wrap */
+.amount {
+    text-align: right;
+    font-family: monospace;
+    font-weight: 500;
+    font-size: 0.95em;
+    white-space: nowrap;
+    color: #2d3748;
+}
+
+.asset-name {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* ===========================================
+   Badges (Exchange labels)
+   =========================================== */
+.badge {
+    font-size: 9px;
+    padding: 2px 5px;
+    border-radius: 4px;
+    color: white;
+    text-transform: uppercase;
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+.b-binance {
+    background: #f3ba2f;
+    color: #000;
+}
+
+.b-bybit {
+    background: #17181e;
+}
+
+.b-okx {
+    background: #000;
+    border: 1px solid #333;
+}
+
+.b-bingx {
+    background: #0044cc;
+}
+
+/* ===========================================
+   Toggle Button (Percent / Money)
+   =========================================== */
+.toggle-btn {
+    background: #edf2f7;
+    color: #4a5568;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    margin-left: auto;
+    margin-right: 10px;
+    cursor: pointer;
+    border: 1px solid #e2e8f0;
+    transition: all 0.2s;
+    min-width: 70px;
+    text-align: center;
+    white-space: nowrap;
+    z-index: 10;
+    font-family: monospace;
+    /* Monospace for toggle */
+}
+
+.toggle-btn:hover {
+    background: #e2e8f0;
+    border-color: #cbd5e0;
+}
+
+.toggle-btn:active {
+    transform: scale(0.95);
+}
+
+/* ===========================================
+   Category Color Dot
+   =========================================== */
+.color-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+
+.header-title {
+    display: flex;
+    align-items: center;
+    margin-right: 10px;
+}
+
+/* ===========================================
+   Total Summary
+   =========================================== */
+.total-summary {
+    text-align: center;
+    font-size: 1.3em;
+    font-weight: 800;
+    margin-top: 20px;
+    color: #22c55e;
+    background: #f0fff4;
+    padding: 15px;
+    border-radius: 12px;
+    border: 1px solid #c6f6d5;
+    white-space: nowrap;
+}
+
+/* ===========================================
+   Loading State
+   =========================================== */
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: #718096;
+    font-size: 1.1em;
+}
+
+.error {
+    text-align: center;
+    padding: 20px;
+    color: #ef4444;
+    background: #fff5f5;
+    border: 1px solid #feb2b2;
+    border-radius: 8px;
+    margin: 20px 0;
+}
+
+/* ===========================================
+   Performance Summary
+   =========================================== */
+.performance-summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+.perf-item {
+    flex: 1;
+    min-width: 120px;
+    background: transparent;
+    padding: 12px 15px;
+    border-radius: 10px;
+    border: 1px dashed #cbd5e0;
+    text-align: center;
+}
+
+.perf-item.perf-tab {
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-style: solid;
+}
+
+.perf-label {
+    display: block;
+    font-size: 0.75em;
+    color: #718096;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.perf-value {
+    display: block;
+    font-size: 1.1em;
+    font-weight: 700;
+    font-family: monospace;
+    color: #2d3748;
+}
+
+.perf-highlight {
+    background: #f7fafc;
+    border-width: 2px;
+}
+
+.perf-positive {
+    color: #22c55e !important;
+}
+
+.perf-negative {
+    color: #ef4444 !important;
+}
+
+/* Tab-enabled perf items */
+.perf-tab {
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.perf-tab:hover {
+    background: #f7fafc;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
+}
+
+.perf-tab.active {
+    background: #ebf8ff;
+    border-color: #4299e1;
+    border-width: 2px;
+}
+
+.perf-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 20%;
+    right: 20%;
+    height: 3px;
+    background: #4299e1;
+    border-radius: 3px 3px 0 0;
+}
+
+/* ===========================================
+   Transfers List
+   =========================================== */
+.transfers-empty {
+    text-align: center;
+    padding: 40px;
+    color: #718096;
+    font-size: 1em;
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+}
+
+.transfers-date-header {
+    font-size: 0.85em;
+    color: #718096;
+    padding: 8px 15px;
+    background: #f7fafc;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    font-weight: 500;
+}
+
+.transfer-item {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    padding: 12px 15px;
+    background: white;
+    border-radius: 10px;
+    border: 1px solid #e2e8f0;
+    margin-bottom: 8px;
+}
+
+.transfer-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.transfer-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.transfer-category-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.transfer-date {
+    font-size: 0.8em;
+    color: #718096;
+}
+
+.transfer-path {
+    font-size: 0.9em;
+    color: #4a5568;
+}
+
+.transfer-note {
+    font-size: 0.8em;
+    color: #a0aec0;
+    font-style: italic;
+    margin-top: 2px;
+}
+
+.transfer-amount {
+    font-family: monospace;
+    font-weight: 700;
+    font-size: 1.1em;
+    white-space: nowrap;
+    align-self: flex-end;
+}
+
+.transfer-amount.deposit {
+    color: #22c55e;
+}
+
+.transfer-amount.withdraw {
+    color: #ef4444;
+}
+
+.transfer-amount.move {
+    color: #4a5568;
+}
+
+/* ===========================================
+   Header Row
+   =========================================== */
+.header-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+#monthSelector {
+    background: #edf2f7;
+    color: #4a5568;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: all 0.2s;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%234a5568' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 30px;
+    min-width: 140px;
+}
+
+#monthSelector:hover {
+    background-color: #e2e8f0;
+    border-color: #cbd5e0;
+}
+
+#monthSelector:focus {
+    outline: none;
+    border-color: #4299e1;
+    box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.2);
+}
+
+.edit-btn {
+    background: #edf2f7;
+    color: #4a5568;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: all 0.2s;
+}
+
+.edit-btn:hover {
+    background: #e2e8f0;
+    border-color: #cbd5e0;
+}
+
+/* ===========================================
+   Modal
+   =========================================== */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: 20px;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 16px;
+    padding: 25px;
+    width: 100%;
+    max-width: 700px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+}
+
+.modal-content h3 {
+    margin: 0 0 20px 0;
+    color: #1a202c;
+    font-size: 1.2em;
+}
+
+.modal-field {
+    margin-bottom: 20px;
+}
+
+.modal-field label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #4a5568;
+    font-size: 0.9em;
+}
+
+.modal-field textarea {
+    width: 100%;
+    height: 180px;
+    padding: 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-family: monospace;
+    font-size: 12px;
+    resize: vertical;
+    box-sizing: border-box;
+}
+
+.modal-field textarea:focus {
+    outline: none;
+    border-color: #4299e1;
+    box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.2);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.btn-primary,
+.btn-secondary {
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 0.95em;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+}
+
+.btn-primary {
+    background: #4299e1;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #3182ce;
+}
+
+.btn-secondary {
+    background: #edf2f7;
+    color: #4a5568;
+    border: 1px solid #e2e8f0;
+}
+
+.btn-secondary:hover {
+    background: #e2e8f0;
+}
+
+/* ===========================================
+   Calculation Tooltip
+   =========================================== */
+#calc-tooltip {
+    position: fixed;
+    background: #2d3748;
+    color: #fff;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: monospace;
+    white-space: pre;
+    text-align: right;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+}
+
+/* ===========================================
+   MoM Delta Indicators
+   =========================================== */
+.delta {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-right: 8px;
+    /* Changed from margin-left to margin-right */
+    white-space: nowrap;
+    cursor: pointer;
+    /* Added pointer cursor */
+    user-select: none;
+    transition: all 0.2s;
+    font-family: monospace;
+    /* Monospace for Delta */
+}
+
+.delta:hover {
+    opacity: 0.8;
+}
+
+.delta.positive {
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.1);
+}
+
+.delta.negative {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.delta.neutral {
+    color: #6b7280;
+    background: rgba(107, 114, 128, 0.1);
+}
+
+/* ===========================================
+   NEW Badge
+   =========================================== */
+.badge-new {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: #ef4444;
+    color: white;
+    margin-left: 6px;
+}
+
+/* ===========================================
+   Ghost Rows (Sold/Exited Assets)
+   =========================================== */
+.ghost-row {
+    opacity: 0.5;
+}
+
+.ghost-row .item-name,
+.ghost-row .balance-usd {
+    color: #9ca3af;
+}
+
+.ghost-row .balance-usd::after {
+    content: " (продан)";
+    font-size: 10px;
+    color: #9ca3af;
+}
+
+/* ===========================================
+   Forecast Section
+   =========================================== */
+.forecast-section {
+    margin: 20px 0;
+    width: 100%;
+    /* Removed max-width 600px */
+    background: white;
+    /* Removed linear-gradient */
+    border-radius: 12px;
+    padding: 0;
+    /* Removed padding to match category-block style if needed, or keeping it but with border */
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    overflow: hidden;
+}
+
+.forecast-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1em;
+    font-weight: 600;
+    padding: 12px 15px;
+    background-color: #fff;
+    border-bottom: 1px solid #edf2f7;
+    margin-bottom: 0;
+    /* Removed large margin */
+    color: #2d3748;
+}
+
+.forecast-icon {
+    display: none;
+    /* Hide icon */
+}
+
+.forecast-yield {
+    margin-left: auto;
+    font-size: 12px;
+    background: #edf2f7;
+    /* Light gray instead of transparent white */
+    color: #4a5568;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-family: monospace;
+}
+
+.forecast-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    /* Remove gap for table-like look? Or keep gap? User said "like other elements". */
+    /* .category-block has table rows. */
+    /* Let's keep grid but style items cleanly. */
+    padding: 15px;
+    gap: 15px;
+}
+
+.forecast-item {
+    background: white;
+    /* Remove rgba(255, 255, 255, 0.15) */
+    border-radius: 10px;
+    padding: 12px;
+    text-align: center;
+    border: 1px dashed #cbd5e0;
+    /* Match .perf-item style */
+}
+
+.forecast-label {
+    display: block;
+    font-size: 0.75em;
+    color: #718096;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.forecast-value {
+    display: block;
+    font-size: 18px;
+    font-weight: 700;
+    font-family: monospace;
+    /* Monospace for Forecast Projections */
+}
+
+/* ===========================================
+   Global Monospace Overrides for specific IDs
+   =========================================== */
+#grand-total-display {
+    font-family: monospace;
+}
+
+/* ===========================================
+   Settings Button
+   =========================================== */
+.settings-btn {
+    background: #edf2f7;
+    color: #4a5568;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: all 0.2s;
+}
+
+.settings-btn:hover {
+    background: #e2e8f0;
+    border-color: #cbd5e0;
+}
+
+.settings-btn svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+/* ===========================================
+   Settings Modal Content
+   =========================================== */
+.source-toggle-group {
+    display: flex;
+    background: #edf2f7;
+    padding: 4px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+
+.source-toggle-option {
+    flex: 1;
+    text-align: center;
+    padding: 8px;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 0.9em;
+    font-weight: 500;
+    color: #718096;
+    transition: all 0.2s;
+}
+
+.source-toggle-option.active {
+    background: white;
+    color: #2d3748;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.auth-status {
+    margin-top: 15px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 0.9em;
+    display: none;
+    /* hidden by default */
+}
+
+.auth-status.success {
+    background: #f0fff4;
+    color: #22c55e;
+    border: 1px solid #c6f6d5;
+}
+
+.auth-status.error {
+    background: #fff5f5;
+    color: #ef4444;
+    border: 1px solid #feb2b2;
+}
+
+.auth-status.loading {
+    background: #ebf8ff;
+    color: #3182ce;
+    border: 1px solid #bee3f8;
+}
+
+.input-group {
+    position: relative;
+    margin-bottom: 15px;
+}
+
+.input-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.85em;
+    color: #718096;
+    font-weight: 600;
+}
+
+.input-field {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 0.95em;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+    /* Fix for width overflow */
+}
+
+.input-field:focus {
+    outline: none;
+    border-color: #4299e1;
+    box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.1);
+}
+
+.input-hint {
+    font-size: 0.8em;
+    color: #a0aec0;
+    margin-top: 4px;
+}
+
+.github-only {
+    display: none;
+}
+
+.github-only.visible {
+    display: block;
+}
