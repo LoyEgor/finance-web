@@ -59,6 +59,16 @@ Splitting into multiple files is supported (e.g., `transfers-2026-02.json`, `tra
 *   **GitHub Pages Ready:** Just push the code to a repository, and it will work.
 *   **Code Strictness:** Auto-formatting (Prettier/ESLint) is **prohibited** in this project. Any code changes must be made with the smallest possible diff, without altering the existing style.
 
+## 🎨 Icons
+
+The source icon is `icons/icon.png`. All other sizes are generated from it by the script `icons/generate.sh` (uses macOS `sips`):
+
+```bash
+cd icons && ./generate.sh
+```
+
+The script produces favicons, Apple Touch Icon, and PWA icons referenced in `index.html` and `manifest.json`.
+
 ## 🚀 Running Locally
 
 A local web server is required for `fetch` to work:
