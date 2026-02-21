@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Инвестиционный Портфель</title>
+    <title>Investment Portfolio</title>
 
     <!-- Styles -->
     <link rel="stylesheet" href="./css/styles.css">
@@ -27,19 +27,19 @@
 
     <div id="performance-summary" class="performance-summary">
         <div id="tab-pnl" class="perf-item perf-tab active">
-            <span class="perf-label">P&L за месяц</span>
+            <span class="perf-label">Monthly P&L</span>
             <span id="perf-pnl" class="perf-value">0 $</span>
         </div>
         <div id="tab-netflow" class="perf-item perf-tab">
-            <span class="perf-label">Чистый поток</span>
+            <span class="perf-label">Net Flow</span>
             <span id="perf-netflow" class="perf-value">0 $</span>
         </div>
         <div class="perf-item">
-            <span class="perf-label">Пополнения</span>
+            <span class="perf-label">Deposits</span>
             <span id="perf-deposits" class="perf-value">0 $</span>
         </div>
         <div class="perf-item">
-            <span class="perf-label">Вывод</span>
+            <span class="perf-label">Withdrawals</span>
             <span id="perf-withdraws" class="perf-value">0 $</span>
         </div>
     </div>
@@ -47,7 +47,13 @@
     <!-- Portfolio View -->
     <div id="view-portfolio">
         <div class="chart-container">
-            <canvas id="portfolioChart"></canvas>
+            <div class="chart-toggle-group" id="chartToggle">
+                <div class="chart-toggle-option active" data-mode="category">Categories</div>
+                <div class="chart-toggle-option" data-mode="source">Sources</div>
+            </div>
+            <div class="chart-canvas-wrapper">
+                <canvas id="portfolioChart"></canvas>
+            </div>
         </div>
 
         <div id="portfolio-list">
@@ -57,7 +63,7 @@
         <!-- Forecast Section -->
         <div id="forecast-section" class="forecast-section" style="display: none;">
             <div class="forecast-header">
-                <span>Эффективность и Прогноз</span>
+                <span>Performance & Forecast</span>
             </div>
             <div class="forecast-grid">
                 <div class="forecast-item">
@@ -86,7 +92,7 @@
     <!-- Settings Modal -->
     <div id="modal-settings" class="modal-overlay" style="display: none;">
         <div class="modal-content">
-            <h3>Источник данных</h3>
+            <h3>Data Source</h3>
 
             <div class="source-toggle-group">
                 <div class="source-toggle-option active" data-source="local">Local (Demo)</div>
@@ -97,7 +103,7 @@
                 <div class="input-group">
                     <label class="input-label">GitHub Token</label>
                     <input type="password" id="input-token" class="input-field" placeholder="ghp_...">
-                    <div class="input-hint">Сохраняется локально в браузере.</div>
+                    <div class="input-hint">Saved locally in the browser.</div>
                 </div>
 
                 <div style="display: flex; gap: 10px;">
@@ -126,8 +132,8 @@
             </div>
 
             <div class="modal-actions">
-                <button id="btn-cancel-settings" class="btn-secondary">Закрыть</button>
-                <button id="btn-save-settings" class="btn-primary">Сохранить</button>
+                <button id="btn-cancel-settings" class="btn-secondary">Close</button>
+                <button id="btn-save-settings" class="btn-primary">Save</button>
             </div>
         </div>
     </div>

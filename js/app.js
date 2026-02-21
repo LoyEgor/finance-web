@@ -9,14 +9,15 @@
 const START_DATE = new Date('2026-01-01');
 
 const MONTH_NAMES = [
-    'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-    'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
 // ===========================================
 // GLOBAL STATE
 // ===========================================
 let portfolioChart = null;
+let chartMode = 'category'; // 'category' or 'source'
 let currentMonthId = null;
 let currentPortfolioData = null;
 let currentTransfersData = [];
@@ -25,6 +26,15 @@ let previousSnapshot = null;
 let currentComparison = null;
 let yieldHistory = []; // Array of monthly yield percentages for forecasting
 let globalCategories = {}; // Unified Category Definitions
+
+// Source colors for chart (derived from badge palette)
+const SOURCE_COLORS = {
+    'Binance': '#f3ba2f',
+    'Bybit': '#17181e',
+    'IBKR': '#7c0800',
+    'OKX': '#555555',
+    'BingX': '#0044cc'
+};
 
 // ===========================================
 // UTILITY: Format currency
@@ -323,7 +333,6 @@ function updateForecastUI(stats) {
 async function fetchYearSequence(currentMonthId) {
     const year = currentMonthId.split('-')[0];
     const monthIndex = parseInt(currentMonthId.split('-')[1]);
-    const sequence = [];
 
     // Fetch in parallel
     const promises = [];
@@ -332,10 +341,10 @@ async function fetchYearSequence(currentMonthId) {
         promises.push(Promise.all([
             fetchPortfolioData(id),
             fetchTransfersForMonth(id)
-        ]).then(([data, transfers]) => ({
+        ]).then(([data, transferGroups]) => ({
             id,
             data,
-            transfers: transfers.flatMap(t => t.transfers) // Flatten immediately
+            transferGroups // Preserve groups with dates for date-based filtering
         })));
     }
 
@@ -415,63 +424,64 @@ async function calculateYearStats(currentMonthId) {
     let prevBalance = 0;
     let accumulatedNetFlow = 0; // To track invested capital for YTD profit
 
+    // Collect ALL transfer groups across all months for date-based filtering
+    const allTransferGroups = sequence.flatMap(item => item.transferGroups || []);
+
     // Iterate sequentially through months to build the chain
-    for (const item of sequence) {
+    let prevSnapshotDate = null;
+    for (let idx = 0; idx < sequence.length; idx++) {
+        const item = sequence[idx];
         if (!item.data) {
-            // If data is missing for a month, break chain? or assume flat?
-            // We assume 0 yield for missing month to keep index sync
             yields.push(0);
             continue;
         }
 
-        // 1. Calculate End Balance for this month
-        // We take the "base" portfolio from JSON and merge transfers to get the actual final state
-        const monthData = JSON.parse(JSON.stringify(item.data)); // Deep copy to not mutate cache if any
-        mergeTransfers(monthData, item.transfers);
-        const endBalance = calculateTotalBalance(monthData);
-
-        // 2. Start Balance
-        // For the very first month (Jan), prevBalance is 0. 
-        // For subsequent months, it's the endBalance of the previous iteration.
+        const endBalance = calculateTotalBalance(item.data);
         const startBalance = prevBalance;
+        const currentSnapshotDate = item.data.meta?.date || item.id;
+
+        // Date-based transfer filtering:
+        // Keep transfers whose date falls in the current period
+        // (after previous snapshot date, up to current snapshot date)
+        const periodGroups = allTransferGroups.filter(g => {
+            if (!prevSnapshotDate) return g.date <= currentSnapshotDate;
+            return g.date > prevSnapshotDate && g.date <= currentSnapshotDate;
+        });
+        const monthTransfers = periodGroups.flatMap(g => g.transfers);
 
         // Calc Net Flow for this month
         let mDeposits = 0;
         let mWithdraws = 0;
-        if (item.transfers) {
-            item.transfers.forEach(t => {
-                if (t.type === 'deposit') mDeposits += t.amount;
-                if (t.type === 'withdraw') mWithdraws += t.amount;
-            });
-        }
+        monthTransfers.forEach(t => {
+            if (t.type === 'deposit') mDeposits += t.amount;
+            if (t.type === 'withdraw') mWithdraws += t.amount;
+        });
         const mNetFlow = mDeposits - mWithdraws;
 
-        // 3. Calculate Yield for this specific month
+        // Calculate Yield for this specific month
         let yieldVal = 0;
         let profitVal = 0;
 
         // ZERO KILOMETER LOGIC FOR FORECAST
-        if (sequence.indexOf(item) === 0) {
+        if (idx === 0) {
             yieldVal = 0;
             profitVal = 0;
-            // For first month, we treat EndBalance as the initial capital injection (if start is 0)
-            // So accumulated Net Flow becomes the EndBalance 
             accumulatedNetFlow += endBalance;
         } else {
-            yieldVal = calculateSimpleYield(startBalance, endBalance, item.transfers);
+            yieldVal = calculateSimpleYield(startBalance, endBalance, monthTransfers);
             profitVal = endBalance - (startBalance + mNetFlow);
             accumulatedNetFlow += mNetFlow;
         }
 
         yields.push(yieldVal);
 
-        // If this is the selected month, save its specific yield for display
         if (item.id === currentMonthId) {
             currentMonthYield = yieldVal;
             currentMonthProfit = profitVal;
         }
 
-        // 4. Prepare for next month
+        // Prepare for next month
+        prevSnapshotDate = currentSnapshotDate;
         prevBalance = endBalance;
     }
 
@@ -534,7 +544,7 @@ async function getAvailableMonths() {
         return await dataService.getAvailableMonths(generateCandidateMonths);
     } catch (e) {
         console.error('Error getting available months:', e);
-        showError('Не удалось получить список месяцев. Проверьте настройки источника данных.');
+        showError('Failed to fetch the list of months. Check data source settings.');
         return [];
     }
 }
@@ -634,7 +644,7 @@ window.showCalcTooltip = function (e, el) {
 // ===========================================
 async function populateMonthSelector() {
     const selector = document.getElementById('monthSelector');
-    selector.innerHTML = '<option>Загрузка...</option>'; // Temporary loading state
+    selector.innerHTML = '<option>Loading...</option>'; // Temporary loading state
 
     // Get filtered list of months
     availableMonths = await getAvailableMonths();
@@ -656,7 +666,7 @@ async function populateMonthSelector() {
         // Load data for the selected month
         await loadMonth(currentMonthId);
     } else {
-        selector.innerHTML = '<option>Нет доступных данных</option>';
+        selector.innerHTML = '<option>No data available</option>';
     }
 
     // Add change event listener
@@ -825,6 +835,40 @@ function applyTransferOperation(portfolioData, categoryId, source, assetName, am
 }
 
 // ===========================================
+// ANNOTATE TRANSFERS ON PORTFOLIO (NO VALUE CHANGE)
+// ===========================================
+function annotateTransfers(portfolioData, transfers) {
+    if (!transfers || transfers.length === 0) return;
+    if (!portfolioData || !portfolioData.portfolio) return;
+
+    transfers.forEach(t => {
+        if (t.type === 'deposit') {
+            markAssetTransfer(portfolioData, t.category, t.source, t.name, t.amount);
+        } else if (t.type === 'withdraw') {
+            markAssetTransfer(portfolioData, t.category, t.source, t.name, -t.amount);
+        } else if (t.type === 'move') {
+            markAssetTransfer(portfolioData, t.from_category, t.from_source, t.from_name, -t.amount);
+            markAssetTransfer(portfolioData, t.to_category, t.to_source, t.to_name, t.amount);
+        }
+    });
+}
+
+function markAssetTransfer(portfolioData, categoryId, source, assetName, amount) {
+    const category = portfolioData.portfolio.find(c => c.id === categoryId);
+    if (!category) return;
+
+    const asset = category.items.find(i => i.name === assetName && i.source === source);
+    if (!asset) return;
+
+    if (!asset.adjustmentHistory) {
+        asset.adjustmentHistory = [];
+    }
+    asset.adjustmentHistory.push(amount);
+    asset.isVirtual = true;
+    asset.adjustment = (asset.adjustment || 0) + amount;
+}
+
+// ===========================================
 // UPDATE PERFORMANCE UI
 // ===========================================
 function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
@@ -882,7 +926,7 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
     pnlEl.textContent = `${pnlSign}${formatMoney(performance.profit)} (${pnlSign}${yieldStr}%)`;
 
     // Set tooltip with start balance
-    pnlTabEl.title = `Старт месяца: ${formatMoney(performance.startBalance)}`;
+    pnlTabEl.title = `Starting balance: ${formatMoney(performance.startBalance)}`;
 
     // Apply color class to PnL
     pnlEl.classList.remove('perf-positive', 'perf-negative');
@@ -949,7 +993,7 @@ async function loadMonth(monthId) {
     const listContainer = document.getElementById('portfolio-list');
 
     // Show loading state
-    listContainer.innerHTML = '<div class="loading">Загрузка данных...</div>';
+    listContainer.innerHTML = '<div class="loading">Loading data...</div>';
     currentMonthId = monthId;
 
     // Determine previous month
@@ -973,7 +1017,7 @@ async function loadMonth(monthId) {
         if (!currentData) {
             const monthInfo = availableMonths.find(m => m.id === monthId);
             const label = monthInfo ? monthInfo.label : monthId;
-            showError(`Данные за ${label} не найдены.<br>Создайте файл <code>data/${monthId}.json</code>`);
+            showError(`No data found for ${label}.<br>Create file <code>data/${monthId}.json</code>`);
             return;
         }
 
@@ -986,34 +1030,40 @@ async function loadMonth(monthId) {
         currentPortfolioData = currentData;
         currentTransfersData = flatTransfers;
 
-        // --- VIRTUAL BALANCE MAGIC ---
-        // Apply transfers to BOTH current and previous data to get "Virtual Balances"
-        mergeTransfers(currentPortfolioData, currentTransfersData);
-        if (prevData) {
-            mergeTransfers(prevData, prevFlatTransfers);
-        }
+        // --- DATE-BASED TRANSFER FILTERING ---
+        // Transfers belong to the period between two snapshots based on their meta.date.
+        // Combine all transfer groups from prev + current month, then filter by snapshot dates.
+        const allTransferGroups = [...prevMonthTransfers, ...monthTransfers];
+        const prevSnapshotDate = prevData?.meta?.date || null;
+        const currentSnapshotDate = currentData.meta?.date || monthId;
+
+        const periodGroups = allTransferGroups.filter(g => {
+            if (!prevSnapshotDate) return g.date <= currentSnapshotDate;
+            return g.date > prevSnapshotDate && g.date <= currentSnapshotDate;
+        });
+        const flowTransfers = periodGroups.flatMap(g => g.transfers);
         // -----------------------------
 
+        // Annotate assets with transfer info (for asterisk display, no value change)
+        annotateTransfers(currentPortfolioData, flowTransfers);
+
         // --- MOM COMPARISON ---
-        // Build snapshots AFTER merge (so we compare virtual balances)
         currentSnapshot = buildSnapshot(currentPortfolioData);
         previousSnapshot = prevData ? buildSnapshot(prevData) : null;
 
-        // Get adjustments per asset for adjusted start calculation
-        const adjustments = getAdjustmentsPerAsset(flatTransfers, currentPortfolioData);
+        const adjustments = getAdjustmentsPerAsset(flowTransfers, currentPortfolioData);
 
-        // Compare snapshots
         currentComparison = previousSnapshot
             ? compareSnapshots(currentSnapshot, previousSnapshot, adjustments)
             : null;
         // ---------------------
 
-        // Calculate balances (AFTER merge)
+        // Calculate balances
         const endBalance = calculateTotalBalance(currentPortfolioData);
         const startBalance = prevData ? calculateTotalBalance(prevData) : 0;
 
         // Calculate performance
-        const performance = calculatePerformance(startBalance, endBalance, currentTransfersData, isFirstMonth);
+        const performance = calculatePerformance(startBalance, endBalance, flowTransfers, isFirstMonth);
 
         // --- FORECASTING 2.0 ---
         try {
@@ -1035,7 +1085,7 @@ async function loadMonth(monthId) {
 
     } catch (error) {
         console.error('Failed to load portfolio data:', error);
-        showError(`Ошибка загрузки данных: ${error.message}`);
+        showError(`Failed to load data: ${error.message}`);
     }
 }
 
@@ -1044,16 +1094,9 @@ async function loadMonth(monthId) {
 // ===========================================
 function renderPortfolio(data, comparison = null) {
     const listContainer = document.getElementById('portfolio-list');
-    const chartCanvas = document.getElementById('portfolioChart');
 
     // Clear containers
     listContainer.innerHTML = '';
-
-    // Destroy previous chart if exists
-    if (portfolioChart) {
-        portfolioChart.destroy();
-        portfolioChart = null;
-    }
 
     // Copy categories for calculations (don't mutate original)
     // AND MERGE WITH GLOBAL CATEGORIES
@@ -1117,11 +1160,6 @@ function renderPortfolio(data, comparison = null) {
         return b.total - a.total;
     });
 
-    // Prepare chart data
-    const chartLabels = [];
-    const chartValues = [];
-    const chartColors = [];
-
     // Helper to format delta badge
     function formatDeltaBadge(deltaInfo) {
         if (!deltaInfo || deltaInfo.percent === 0) return '';
@@ -1149,10 +1187,6 @@ function renderPortfolio(data, comparison = null) {
         const catComparison = comparison?.categories?.[cat.id];
         const catDeltaBadge = formatDeltaBadge(catComparison);
 
-        chartLabels.push(cat.title);
-        chartValues.push(cat.total);
-        chartColors.push(cat.color);
-
         const section = document.createElement('div');
         section.className = 'category-block';
 
@@ -1175,16 +1209,19 @@ function renderPortfolio(data, comparison = null) {
             let displayVal = item.val.toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
 
             if (item.isVirtual) {
-                // Build calculation breakdown for tooltip
-                const originalVal = item.originalVal || 0;
-                let calcParts = [formatMoney(originalVal)];
+                // Build transfer breakdown for tooltip
+                let calcParts = [];
                 if (item.adjustmentHistory) {
                     item.adjustmentHistory.forEach(adj => {
                         const sign = adj >= 0 ? '+' : '';
                         calcParts.push(`${sign}${formatMoney(adj)}`);
                     });
                 }
-                calcParts.push(`= ${formatMoney(item.val)}`);
+                const net = item.adjustment || 0;
+                if (calcParts.length > 1) {
+                    const netSign = net >= 0 ? '+' : '';
+                    calcParts.push(`Net: ${netSign}${formatMoney(net)}`);
+                }
                 const tooltipText = calcParts.join('\n');
 
                 // Add red asterisk with click handler to show tooltip
@@ -1234,10 +1271,101 @@ function renderPortfolio(data, comparison = null) {
         listContainer.appendChild(section);
     });
 
-    // Format grand total string
+    // Store chart data globally for re-rendering on toggle
+    lastChartData = { categories, grandTotal };
+
+    renderChart();
+}
+
+// ===========================================
+// RENDER CHART (Category or Source mode)
+// ===========================================
+let lastChartData = null;
+
+function renderChart() {
+    const chartCanvas = document.getElementById('portfolioChart');
+    if (!chartCanvas || !lastChartData) return;
+
+    // Destroy previous chart
+    if (portfolioChart) {
+        portfolioChart.destroy();
+        portfolioChart = null;
+    }
+
+    const { categories, grandTotal } = lastChartData;
+    const chartLabels = [];
+    const chartValues = [];
+    const chartColors = [];
+    const chartDeltas = []; // MOM delta percentages
+
+    if (chartMode === 'source') {
+        // Aggregate by source
+        const sourceMap = {}; // source -> { total, prevTotal }
+        categories.forEach(cat => {
+            cat.items.forEach(item => {
+                if (item.isGhost) return;
+                const src = item.source;
+                if (!sourceMap[src]) sourceMap[src] = { total: 0, prevTotal: 0 };
+                sourceMap[src].total += item.val;
+            });
+        });
+
+        // Get previous totals by source
+        if (previousSnapshot) {
+            Object.values(previousSnapshot.assetMap).forEach(asset => {
+                const src = asset.source;
+                if (!sourceMap[src]) sourceMap[src] = { total: 0, prevTotal: 0 };
+                sourceMap[src].prevTotal += asset.val;
+            });
+        }
+
+        // Sort by total descending
+        const sorted = Object.entries(sourceMap).sort((a, b) => b[1].total - a[1].total);
+        const defaultColors = ['#6366f1', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#64748b'];
+        sorted.forEach(([src, data], i) => {
+            chartLabels.push(src);
+            chartValues.push(data.total);
+            chartColors.push(SOURCE_COLORS[src] || defaultColors[i % defaultColors.length]);
+
+            // Calculate delta
+            if (data.prevTotal > 0) {
+                // Get net adjustments for this source
+                let srcAdj = 0;
+                if (currentComparison) {
+                    Object.entries(currentSnapshot.assetMap).forEach(([key, asset]) => {
+                        if (asset.source === src) {
+                            const adj = currentComparison.assets[key];
+                            if (adj && adj.adjustment !== undefined) {
+                                srcAdj += adj.adjustment || 0;
+                            }
+                        }
+                    });
+                }
+                const adjustedPrev = data.prevTotal + srcAdj;
+                const delta = adjustedPrev > 0 ? ((data.total - adjustedPrev) / adjustedPrev * 100) : 0;
+                chartDeltas.push(delta);
+            } else if (data.total > 0) {
+                chartDeltas.push(null); // new source
+            } else {
+                chartDeltas.push(0);
+            }
+        });
+    } else {
+        // Category mode (existing)
+        categories.forEach(cat => {
+            chartLabels.push(cat.title);
+            chartValues.push(cat.total);
+            chartColors.push(cat.color);
+
+            // Calculate delta from comparison
+            const catComp = currentComparison?.categories?.[cat.id];
+            chartDeltas.push(catComp ? catComp.percent : null);
+        });
+    }
+
+    // Grand total string for center
     const grandTotalStr = grandTotal.toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
 
-    // Plugin to draw text in center of the doughnut (chartArea) with specified font size
     const centerTextPlugin = {
         id: 'centerText',
         beforeDraw: function (chart) {
@@ -1247,18 +1375,16 @@ function renderPortfolio(data, comparison = null) {
             const centerY = (top + bottom) / 2;
 
             ctx.save();
-            const fontSize = 16; // px
+            const fontSize = 16;
             ctx.font = `800 ${fontSize}px monospace`;
             ctx.fillStyle = '#2d3748';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-
             ctx.fillText(grandTotalStr, centerX, centerY);
             ctx.restore();
         }
     };
 
-    // Create Chart.js doughnut chart
     const ctx = chartCanvas.getContext('2d');
     portfolioChart = new Chart(ctx, {
         type: 'doughnut',
@@ -1289,12 +1415,34 @@ function renderPortfolio(data, comparison = null) {
                         label: function (context) {
                             const val = context.raw;
                             const pct = ((val / grandTotal) * 100).toFixed(2) + '%';
-                            return ` ${pct} (${val.toLocaleString('ru-RU')} $)`;
+                            const delta = chartDeltas[context.dataIndex];
+                            let deltaStr = '';
+                            if (delta !== null && delta !== undefined) {
+                                const sign = delta >= 0 ? '+' : '';
+                                deltaStr = ` | MoM: ${sign}${delta.toFixed(1)}%`;
+                            }
+                            return ` ${pct} (${val.toLocaleString('ru-RU')} $)${deltaStr}`;
                         }
                     }
                 }
             }
         }
+    });
+}
+
+// ===========================================
+// CHART TOGGLE HANDLER
+// ===========================================
+function setupChartToggle() {
+    const toggle = document.getElementById('chartToggle');
+    if (!toggle) return;
+    toggle.addEventListener('click', (e) => {
+        const option = e.target.closest('.chart-toggle-option');
+        if (!option || option.classList.contains('active')) return;
+        toggle.querySelectorAll('.chart-toggle-option').forEach(o => o.classList.remove('active'));
+        option.classList.add('active');
+        chartMode = option.getAttribute('data-mode');
+        renderChart();
     });
 }
 
@@ -1372,7 +1520,7 @@ function renderTransfers(allTransfersData, portfolioData) {
 
     // allTransfersData is array of {date, transfers}
     if (!allTransfersData || allTransfersData.length === 0) {
-        container.innerHTML = '<div class="transfers-empty">Транзакций не найдено</div>';
+        container.innerHTML = '<div class="transfers-empty">No transactions found</div>';
         return;
     }
 
@@ -1534,7 +1682,7 @@ function initSettingsUI() {
         if (currentSource === 'remote') {
             authStatus.className = 'auth-status loading';
             authStatus.style.display = 'block';
-            authStatus.textContent = 'Проверка соединения...';
+            authStatus.textContent = 'Checking connection...';
 
             // Temporarily update service to test
             const oldConfig = { ...dataService.config };
@@ -1554,7 +1702,7 @@ function initSettingsUI() {
                 }, 1000);
             } else {
                 authStatus.className = 'auth-status error';
-                authStatus.textContent = 'Ошибка: ' + result.message;
+                authStatus.textContent = 'Error: ' + result.message;
                 // Revert config if test failed (optional, depending on UX. Usually better to let them save anyway? 
                 // But user asked for reliable workflow. Let's block save on error or at least warn.)
                 // We'll keep the bad config in the service instance (since we modified it) but NOT save to localStorage if we wanted to be strict.
@@ -1587,11 +1735,12 @@ async function init() {
     try {
         await populateMonthSelector();
     } catch (e) {
-        showError('Ошибка инициализации. Проверьте настройки.');
+        showError('Initialization error. Check settings.');
     }
 
     // 2. Setup tab handlers
     setupTabHandlers();
+    setupChartToggle();
 }
 
 // Start the app
