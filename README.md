@@ -1,44 +1,44 @@
 # Investment Portfolio Tracker
 
-Легковесное веб-приложение для трекинга инвестиционного портфеля. Разработано для хостинга на **GitHub Pages** (или любом другом статическом хостинге) без необходимости в бэкенде.
+A lightweight web application for tracking an investment portfolio. Designed for hosting on **GitHub Pages** (or any other static hosting) with no backend required.
 
 ---
 
-## 📈 Ключевые Возможности
+## 📈 Key Features
 
-### 1. Month-over-Month Сравнение
-Основная задача — показать, как изменился портфель по сравнению с прошлым месяцем.
-*   **Delta Indicators:** Показывает изменение каждого актива и категории (`+500$`, `-2%`).
-*   **Toggle Mode (`% / $`):** Клик по индикатору переключает отображение между процентами и деньгами.
-*   **Ghost Rows:** Если актив был продан (баланс 0), он отображается серым цветом для сохранения контекста. **Примечание для разработки:** Активы идентифицируются по композитному ключу `categoryId_source_name` для корректного MoM сравнения и отображения "ghost" строк.
-*   **NEW Badge:** Новые активы помечаются специальным бейджем.
+### 1. Month-over-Month Comparison
+The primary purpose is to show how the portfolio has changed compared to the previous month.
+*   **Delta Indicators:** Shows the change for each asset and category (`+500$`, `-2%`).
+*   **Toggle Mode (`% / $`):** Clicking the indicator toggles between percentage and dollar display.
+*   **Ghost Rows:** If an asset was sold (balance 0), it is displayed in gray to preserve context. **Dev note:** Assets are identified by a composite key `categoryId_source_name` for correct MoM comparison and "ghost" row display.
+*   **NEW Badge:** New assets are marked with a special badge.
 
-### 2. Учет Транзакций (Transfers)
-Приложение умеет "на лету" применять транзакции к снепшотам. Трансферы **не пересчитывают** балансы активов (Снепшот — Source of Truth), а служат только для расчета PnL и аннотаций в UI.
-*   **Virtual Balances:** Если вы добавили транзакцию в `transfers-*.json`, приложение покажет "виртуальный" баланс (сколько было бы денег с учетом этой операции) и пометит значение звездочкой `*`. Функция `annotateTransfers` добавляет UI-индикаторы к существующим активам в памяти, но не создает искусственные дубликаты.
-*   **Типы операций:**
-    *   `deposit` — Ввод средств (увеличивает базу инвестиций).
-    *   `withdraw` — Вывод средств.
-    *   `move` — Перемещение между категориями (не влияет на общий капитал).
+### 2. Transfers
+The application can apply transactions to snapshots on the fly. Transfers **do not recalculate** asset balances (Snapshot is the Source of Truth); they only serve for PnL calculations and UI annotations.
+*   **Virtual Balances:** If you add a transaction in `transfers-*.json`, the app will show a "virtual" balance (what the amount would be accounting for this operation) and mark the value with an asterisk `*`. The `annotateTransfers` function adds UI indicators to existing assets in memory but does not create artificial duplicates.
+*   **Operation types:**
+    *   `deposit` — Funds deposited (increases the investment base).
+    *   `withdraw` — Funds withdrawn.
+    *   `move` — Transfer between categories (does not affect total capital).
 
-### 3. Forecasting (Прогнозирование)
-Раздел "Эффективность и Прогноз" рассчитывает честную доходность инвестиций (Return on Invested Capital).
+### 3. Forecasting
+The "Performance & Forecast" section calculates honest investment returns (Return on Invested Capital).
 *   **Simple Return:** `Profit / (Start Balance + Deposits)`.
-*   **Zero Kilometer:** Первый месяц всегда показывает 0% доходности и 0$ прибыли. Весь баланс считается депозитом.
-*   **YTD & Annual Proj:** Накопленный сложный процент с начала года и прогноз на год.
-*   **Toggle:** Клик переключает отображение между `%` (доходность) и `$` (реальная прибыль).
+*   **Zero Kilometer:** The first month always shows 0% return and $0 profit. The entire balance is treated as a deposit.
+*   **YTD & Annual Proj:** Compound cumulative return since the beginning of the year and annual projection.
+*   **Toggle:** Click toggles display between `%` (return) and `$` (actual profit).
 
 ---
 
-## 🏗 Структура Данных
+## 🏗 Data Structure
 
 ### 1. Categories (`data/categories.json`)
-Глобальный файл с определением категорий (названия, цвета, порядок).
-*   Позволяет менять цвета и названия категорий сразу во всей истории портфеля.
-*   Определяет порядок сортировки на графике и в списке (Order 1 -> 5).
+A global file defining categories (names, colors, order).
+*   Allows changing colors and category names across the entire portfolio history.
+*   Defines the sort order on the chart and in the list (Order 1 -> 5).
 
 ### 2. Monthly Snapshots (`data/YYYY-MM.json`)
-Снапшот портфеля на конец месяца. Балансы активов зафиксированы в этих файлах и являются абсолютной истиной (Source of Truth).
+A portfolio snapshot at the end of the month. Asset balances are fixed in these files and serve as the absolute source of truth.
 ```json
 {
   "portfolio": [
@@ -48,20 +48,20 @@
 ```
 
 ### 3. Transfers (`data/transfers-*.json`)
-Поддерживается разбиение на несколько файлов (например, `transfers-2026-02.json`, `transfers-2026-02-15.json` и т.д.).
-**Примечание для разработки:** Привязка трансферов к месяцу работает строго по дате внутри файла (`meta.date`), а не по именам файлов. Трансферы фильтруются интервалом между датами текущего и предыдущего снепшотов.
+Splitting into multiple files is supported (e.g., `transfers-2026-02.json`, `transfers-2026-02-15.json`, etc.).
+**Dev note:** Transfer assignment to a month is based strictly on the date inside the file (`meta.date`), not on file names. There are **two filtering modes**: annotations (`*`) and MoM comparisons use the interval between snapshot dates, while the top stats bar (P&L, Net Flow, Deposits, Withdrawals) filters transfers by **calendar month** (`YYYY-MM-01` — `YYYY-MM-31`).
 
 ---
 
-## 🛠 Технические Детали
-*   **Zero Dependencies:** Только Vanilla JS + Chart.js (CDN).
-*   **Hot-reload:** Данные подгружаются через `fetch` с cache-busting (чтобы не кэшировались старые JSON).
-*   **GitHub Pages Ready:** Просто запушьте код в репозиторий, и он будет работать.
-*   **Code Strictness:** В проекте **запрещено** использовать автоформатирование (Prettier/ESLint). Любые изменения кода должны вноситься с минимально возможным diff-ом, не меняя существующий стиль.
+## 🛠 Technical Details
+*   **Zero Dependencies:** Vanilla JS + Chart.js (CDN) only.
+*   **Hot-reload:** Data is loaded via `fetch` with cache-busting (to prevent caching of old JSON files).
+*   **GitHub Pages Ready:** Just push the code to a repository, and it will work.
+*   **Code Strictness:** Auto-formatting (Prettier/ESLint) is **prohibited** in this project. Any code changes must be made with the smallest possible diff, without altering the existing style.
 
-## � Запуск (Локально)
+## 🚀 Running Locally
 
-Для работы `fetch` требуется локальный веб-сервер:
+A local web server is required for `fetch` to work:
 
 ```bash
 # Python
@@ -71,24 +71,24 @@ python3 -m http.server 8006
 npx http-server -p 8006
 ```
 
-Откройте `http://localhost:8006`.
+Open `http://localhost:8006`.
 
-## 🔒 Приватный Источник Данных (GitHub API)
+## 🔒 Private Data Source (GitHub API)
 
-Вы можете выложить фронтенд на публичный GitHub Pages, а данные хранить в **отдельном приватном репозитории**.
+You can deploy the frontend to public GitHub Pages while storing data in a **separate private repository**.
 
-### Настройка
-1.  **Создайте приватный репозиторий** (например, `finances-data`).
-2.  Перенесите туда папку `data/` (структура должна сохраниться).
-3.  **Создайте Personal Access Token (Classic):**
+### Setup
+1.  **Create a private repository** (e.g., `finances-data`).
+2.  Move the `data/` folder there (the structure must be preserved).
+3.  **Create a Personal Access Token (Classic):**
     *   Settings -> Developer Settings -> Personal access tokens -> Tokens (classic).
     *   Generate new token.
     *   Scope: `repo` (Full control of private repositories).
-    *   **Важно:** Скопируйте токен, он показывается один раз.
-4.  **В приложении:**
-    *   Нажмите иконку **Settings** ⚙️.
-    *   Выберите **Remote (GitHub)**.
-    *   Введите токен, Owner (ваш ник), Repo (`finances-data`), Branch (`main`) и Path (`data`).
-    *   Нажмите **Save**.
+    *   **Important:** Copy the token — it is shown only once.
+4.  **In the application:**
+    *   Click the **Settings** ⚙️ icon.
+    *   Select **Remote (GitHub)**.
+    *   Enter the token, Owner (your username), Repo (`finances-data`), Branch (`main`), and Path (`data`).
+    *   Click **Save**.
 
-⚠️ **Безопасность:** Токен сохраняется **только в localStorage** вашего браузера. Он не передается никуда, кроме API GitHub. Используйте это только на личных устройствах.
+⚠️ **Security:** The token is stored **only in localStorage** of your browser. It is not transmitted anywhere except to the GitHub API. Use this only on personal devices.

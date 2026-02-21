@@ -41,7 +41,7 @@ const SOURCE_COLORS = {
 // ===========================================
 function formatMoney(value) {
     const sign = value >= 0 ? '' : '-';
-    return sign + Math.abs(value).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
+    return sign + Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
 }
 
 // ===========================================
@@ -326,6 +326,18 @@ function updateForecastUI(stats) {
     updateEl(monthEl, stats.monthYield, stats.monthProfit);
     updateEl(ytdEl, stats.ytd, stats.ytdProfit);
     updateEl(annualEl, stats.projected, stats.projectedProfit);
+
+    if (monthEl) {
+        const invested = stats.currentMonthStart + stats.currentMonthDeposits;
+        monthEl.parentElement.title = `${fmtMoney(stats.monthProfit)} / (${fmtMoney(stats.currentMonthStart)} + ${fmtMoney(stats.currentMonthDeposits)})\n= ${fmtMoney(stats.monthProfit)} / ${fmtMoney(invested)}\n= ${(stats.monthYield * 100).toFixed(2)}%`;
+    }
+    if (ytdEl) {
+        const factors = stats.yields.map(y => `(1 + ${(y * 100).toFixed(2)}%)`).join(' × ');
+        ytdEl.parentElement.title = `${factors} - 1\n= ${(stats.ytd * 100).toFixed(2)}%\nYTD P&L: ${fmtMoney(stats.currentEndBalance)} - ${fmtMoney(stats.accumulatedNetFlow)} = ${fmtMoney(stats.ytdProfit)}`;
+    }
+    if (annualEl) {
+        annualEl.parentElement.title = `(1 + ${(stats.ytd * 100).toFixed(2)}%)^(12/${stats.monthsPassed}) - 1\n= ${(stats.projected * 100).toFixed(2)}%`;
+    }
 }
 
 
@@ -418,6 +430,9 @@ async function calculateYearStats(currentMonthId) {
     const yields = [];
     let currentMonthYield = 0;
     let currentMonthProfit = 0;
+    let currentMonthStart = 0;
+    let currentMonthEnd = 0;
+    let currentMonthDeposits = 0;
 
     // Initialize Start Balance for Jan 1st as 0 (Assumption: Portfolio starts fresh or rollover not tracked yet)
     // In a real system, we would need the Dec 31st snapshot of previous year.
@@ -478,6 +493,9 @@ async function calculateYearStats(currentMonthId) {
         if (item.id === currentMonthId) {
             currentMonthYield = yieldVal;
             currentMonthProfit = profitVal;
+            currentMonthStart = startBalance;
+            currentMonthEnd = endBalance;
+            currentMonthDeposits = mDeposits;
         }
 
         // Prepare for next month
@@ -506,7 +524,14 @@ async function calculateYearStats(currentMonthId) {
         ytd: ytd,
         ytdProfit: ytdProfit,
         projected: projected,
-        projectedProfit: projectedProfit
+        projectedProfit: projectedProfit,
+        monthsPassed: monthsPassed,
+        yields: yields,
+        currentEndBalance: currentEndBalance,
+        accumulatedNetFlow: accumulatedNetFlow,
+        currentMonthStart: currentMonthStart,
+        currentMonthEnd: currentMonthEnd,
+        currentMonthDeposits: currentMonthDeposits
     };
 }
 
@@ -704,58 +729,50 @@ function calculateTotalBalance(portfolioData) {
 // ===========================================
 // CALCULATE PERFORMANCE (PnL)
 // ===========================================
-function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth = false) {
+function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth = false, calendarTransfers = null) {
+    // Calculate calendar-month deposits/withdrawals for UI display
+    let calDeposits = 0;
+    let calWithdraws = 0;
+    const calSrc = calendarTransfers || transfers || [];
+    calSrc.forEach(t => {
+        if (t.type === 'deposit') calDeposits += t.amount;
+        else if (t.type === 'withdraw') calWithdraws += t.amount;
+    });
+
     // ZERO KILOMETER LOGIC (First Month)
     if (isFirstMonth) {
         return {
             startBalance: 0,
             endBalance,
-            totalDeposits: endBalance, // Treat everything as a deposit
-            totalWithdraws: 0,
-            netFlow: endBalance,
+            totalDeposits: calDeposits,
+            totalWithdraws: calWithdraws,
+            netFlow: calDeposits - calWithdraws,
             profit: 0, // Forced 0
             yieldPercent: 0 // Forced 0
         };
     }
 
     // NORMAL LOGIC
-    // Calculate deposits and withdrawals separately
-    let totalDeposits = 0;
-    let totalWithdraws = 0;
-
-    if (transfers && Array.isArray(transfers)) {
-        transfers.forEach(t => {
-            if (t.type === 'deposit') {
-                totalDeposits += t.amount;
-            } else if (t.type === 'withdraw') {
-                totalWithdraws += t.amount;
-            }
-        });
-    }
-
-    // Net flow = Deposits - Withdrawals
-    const netFlow = totalDeposits - totalWithdraws;
+    const netFlow = calDeposits - calWithdraws;
 
     // Profit = EndBalance - (StartBalance + NetFlow)
     const profit = endBalance - (startBalance + netFlow);
 
     // Yield % = Profit / (StartBalance + Deposits) * 100
-    // Simple Return on Invested Capital
-    const investedCapital = startBalance + totalDeposits;
+    const investedCapital = startBalance + calDeposits;
 
     let yieldPercent = 0;
     if (investedCapital > 0.01) {
         yieldPercent = (profit / investedCapital) * 100;
     } else if (profit > 0) {
-        // Edge case: Profit with 0 capital (Airdrops etc with no cost basis)
-        yieldPercent = 100; // Cap at 100% or consider Infinite? User prefers simple.
+        yieldPercent = 100;
     }
 
     return {
         startBalance,
         endBalance,
-        totalDeposits,
-        totalWithdraws,
+        totalDeposits: calDeposits,
+        totalWithdraws: calWithdraws,
         netFlow,
         profit,
         yieldPercent
@@ -898,8 +915,10 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
 
     // Net Flow (with sign and color)
     const netFlowEl = document.getElementById('perf-netflow');
+    const netFlowTabEl = document.getElementById('tab-netflow');
     const netFlowSign = performance.netFlow >= 0 ? '+' : '';
     netFlowEl.textContent = netFlowSign + formatMoney(performance.netFlow);
+    netFlowTabEl.title = `+${formatMoney(performance.totalDeposits)} - ${formatMoney(performance.totalWithdraws)} = ${netFlowSign}${formatMoney(performance.netFlow)}`;
     netFlowEl.classList.remove('perf-positive', 'perf-negative');
     if (performance.netFlow > 0) {
         netFlowEl.classList.add('perf-positive');
@@ -925,8 +944,9 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
     const yieldStr = performance.yieldPercent.toFixed(2);
     pnlEl.textContent = `${pnlSign}${formatMoney(performance.profit)} (${pnlSign}${yieldStr}%)`;
 
-    // Set tooltip with start balance
-    pnlTabEl.title = `Starting balance: ${formatMoney(performance.startBalance)}`;
+    // Set tooltip with PnL formula
+    const nfSign = performance.netFlow >= 0 ? '+' : '';
+    pnlTabEl.title = `${formatMoney(performance.endBalance)} - (${formatMoney(performance.startBalance)} ${nfSign} ${formatMoney(performance.netFlow)}) = ${pnlSign}${formatMoney(performance.profit)}`;
 
     // Apply color class to PnL
     pnlEl.classList.remove('perf-positive', 'perf-negative');
@@ -1044,6 +1064,12 @@ async function loadMonth(monthId) {
         const flowTransfers = periodGroups.flatMap(g => g.transfers);
         // -----------------------------
 
+        // --- CALENDAR-MONTH TRANSFER FILTERING (for top bar stats) ---
+        const calMonthStart = monthId + '-01';
+        const calMonthEnd = monthId + '-31';
+        const calendarGroups = allTransferGroups.filter(g => g.date >= calMonthStart && g.date <= calMonthEnd);
+        const calendarTransfers = calendarGroups.flatMap(g => g.transfers);
+
         // Annotate assets with transfer info (for asterisk display, no value change)
         annotateTransfers(currentPortfolioData, flowTransfers);
 
@@ -1062,8 +1088,8 @@ async function loadMonth(monthId) {
         const endBalance = calculateTotalBalance(currentPortfolioData);
         const startBalance = prevData ? calculateTotalBalance(prevData) : 0;
 
-        // Calculate performance
-        const performance = calculatePerformance(startBalance, endBalance, flowTransfers, isFirstMonth);
+        // Calculate performance (PnL uses snapshot-filtered, stats use calendar-filtered)
+        const performance = calculatePerformance(startBalance, endBalance, flowTransfers, isFirstMonth, calendarTransfers);
 
         // --- FORECASTING 2.0 ---
         try {
@@ -1181,7 +1207,7 @@ function renderPortfolio(data, comparison = null) {
     // Generate category list HTML
     categories.forEach((cat, index) => {
         const percent = ((cat.total / grandTotal) * 100).toFixed(2) + '%';
-        const money = cat.total.toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
+        const money = cat.total.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
 
         // Category delta badge
         const catComparison = comparison?.categories?.[cat.id];
@@ -1206,7 +1232,7 @@ function renderPortfolio(data, comparison = null) {
             // Delta badge
             const deltaBadge = formatDeltaBadge(assetComp);
 
-            let displayVal = item.val.toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
+            let displayVal = item.val.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
 
             if (item.isVirtual) {
                 // Build transfer breakdown for tooltip
@@ -1327,23 +1353,12 @@ function renderChart() {
             chartValues.push(data.total);
             chartColors.push(SOURCE_COLORS[src] || defaultColors[i % defaultColors.length]);
 
-            // Calculate delta
-            if (data.prevTotal > 0) {
-                // Get net adjustments for this source
-                let srcAdj = 0;
-                if (currentComparison) {
-                    Object.entries(currentSnapshot.assetMap).forEach(([key, asset]) => {
-                        if (asset.source === src) {
-                            const adj = currentComparison.assets[key];
-                            if (adj && adj.adjustment !== undefined) {
-                                srcAdj += adj.adjustment || 0;
-                            }
-                        }
-                    });
-                }
-                const adjustedPrev = data.prevTotal + srcAdj;
-                const delta = adjustedPrev > 0 ? ((data.total - adjustedPrev) / adjustedPrev * 100) : 0;
-                chartDeltas.push(delta);
+            // Calculate delta of share percentage
+            const prevGrandTotal = Object.values(sourceMap).reduce((s, d) => s + d.prevTotal, 0);
+            if (data.prevTotal > 0 && prevGrandTotal > 0) {
+                const prevShare = (data.prevTotal / prevGrandTotal) * 100;
+                const curShare = (data.total / grandTotal) * 100;
+                chartDeltas.push(curShare - prevShare);
             } else if (data.total > 0) {
                 chartDeltas.push(null); // new source
             } else {
@@ -1357,14 +1372,21 @@ function renderChart() {
             chartValues.push(cat.total);
             chartColors.push(cat.color);
 
-            // Calculate delta from comparison
-            const catComp = currentComparison?.categories?.[cat.id];
-            chartDeltas.push(catComp ? catComp.percent : null);
+            // Calculate delta of share percentage
+            if (previousSnapshot && currentComparison?.categories?.[cat.id]) {
+                const prevTotal = Object.values(previousSnapshot.categories).reduce((s, c) => s + c.total, 0);
+                const prevCatTotal = previousSnapshot.categories[cat.id]?.total || 0;
+                const prevShare = prevTotal > 0 ? (prevCatTotal / prevTotal) * 100 : 0;
+                const curShare = grandTotal > 0 ? (cat.total / grandTotal) * 100 : 0;
+                chartDeltas.push(curShare - prevShare);
+            } else {
+                chartDeltas.push(null);
+            }
         });
     }
 
     // Grand total string for center
-    const grandTotalStr = grandTotal.toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' $';
+    const grandTotalStr = grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
 
     const centerTextPlugin = {
         id: 'centerText',
@@ -1411,17 +1433,20 @@ function renderChart() {
                     }
                 },
                 tooltip: {
+                    footerColor: '#9ca3af',
+                    footerFont: { size: 11, weight: 'normal' },
                     callbacks: {
                         label: function (context) {
                             const val = context.raw;
                             const pct = ((val / grandTotal) * 100).toFixed(2) + '%';
-                            const delta = chartDeltas[context.dataIndex];
-                            let deltaStr = '';
-                            if (delta !== null && delta !== undefined) {
-                                const sign = delta >= 0 ? '+' : '';
-                                deltaStr = ` | MoM: ${sign}${delta.toFixed(1)}%`;
-                            }
-                            return ` ${pct} (${val.toLocaleString('ru-RU')} $)${deltaStr}`;
+                            return ` ${pct} (${val.toLocaleString('en-US')} $)`;
+                        },
+                        footer: function (items) {
+                            if (!items.length) return '';
+                            const delta = chartDeltas[items[0].dataIndex];
+                            if (delta === null || delta === undefined) return '';
+                            const sign = delta >= 0 ? '+' : '';
+                            return `Share: ${sign}${delta.toFixed(2)}%`;
                         }
                     }
                 }
