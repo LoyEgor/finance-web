@@ -1489,7 +1489,7 @@ function renderChart() {
                     { key: 'etf_us', label: 'Stocks (ETF USA)' },
                     { key: 'etf_europe', label: 'Stocks (ETF Europe)' },
                     { key: 'etf_asia', label: 'Stocks (ETF Asia)' },
-                    { key: 'companies', label: 'Stocks' }
+                    { key: 'companies', label: 'Stocks (other)' }
                 ];
                 const sgBuckets = { etf_us: 0, etf_europe: 0, etf_asia: 0, companies: 0 };
                 cat.items.forEach(item => {
