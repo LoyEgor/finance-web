@@ -37,6 +37,41 @@ const SOURCE_COLORS = {
 };
 
 // ===========================================
+// ETF CLASSIFICATION (UI-only subgrouping for stocks)
+// ===========================================
+const ETF_REGION = {
+    // US
+    VOO: 'us', SPY: 'us', IVV: 'us', SPLG: 'us', VTI: 'us', ITOT: 'us', SCHB: 'us', RSP: 'us',
+    QQQ: 'us', QQQM: 'us', DIA: 'us',
+    VUG: 'us', IWF: 'us', SCHG: 'us',
+    VTV: 'us', IWD: 'us', SCHV: 'us',
+    VYM: 'us', SCHD: 'us', DGRO: 'us', HDV: 'us',
+    IWM: 'us', VB: 'us', IJR: 'us', VO: 'us', IJH: 'us', SCHM: 'us',
+    XLK: 'us', VGT: 'us', SOXX: 'us', SMH: 'us',
+    // Global (merged into us)
+    VT: 'us', ACWI: 'us', VEA: 'us', IEFA: 'us', VWO: 'us', IEMG: 'us', EEM: 'us',
+    CSPX: 'us', SXR8: 'us', SWDA: 'us', IWDA: 'us', EUNL: 'us', EIMI: 'us', VWCE: 'us',
+    // Europe
+    MEUD: 'europe', EXSA: 'europe', IMEU: 'europe', EUNK: 'europe', VGK: 'europe', IEV: 'europe', EZU: 'europe', FEZ: 'europe',
+    VUKE: 'europe', ISF: 'europe', CSUK: 'europe', SXR3: 'europe', EWU: 'europe',
+    // Asia
+    AAXJ: 'asia', VPL: 'asia',
+    FXI: 'asia', MCHI: 'asia', KWEB: 'asia', CQQQ: 'asia', FXC: 'asia', CBUK: 'asia',
+    EWJ: 'asia', DXJ: 'asia', TPXE: 'asia', SXRZ: 'asia', VJPA: 'asia',
+    EWY: 'asia', CSKR: 'asia',
+    EWT: 'asia', INDA: 'asia', EPI: 'asia'
+};
+
+function classifyStockItem(name) {
+    const ticker = (name || '').toUpperCase().trim().replace(/[.\s]/g, '');
+    const region = ETF_REGION[ticker];
+    if (region === 'us') return 'etf_us';
+    if (region === 'europe') return 'etf_europe';
+    if (region === 'asia') return 'etf_asia';
+    return 'companies';
+}
+
+// ===========================================
 // UTILITY: Format currency
 // ===========================================
 function formatMoney(value) {
@@ -1216,7 +1251,8 @@ function renderPortfolio(data, comparison = null) {
         const section = document.createElement('div');
         section.className = 'category-block';
 
-        const rows = cat.items.map(item => {
+        // Helper to render a single item row
+        function renderItemRow(item) {
             const key = item.key || getAssetKey(cat.id, item.source, item.name);
             const assetComp = comparison?.assets?.[key];
 
@@ -1266,7 +1302,97 @@ function renderPortfolio(data, comparison = null) {
                 <td class="amount">${deltaBadge}${displayVal}</td>
             </tr>
         `;
-        }).join('');
+        }
+
+        let rows;
+        if (cat.id === 'stocks') {
+            // Partition items into subgroups
+            const SUBGROUP_ORDER = [
+                { key: 'etf_us', label: 'ETF \u2013 USA' },
+                { key: 'etf_europe', label: 'ETF \u2013 Europe' },
+                { key: 'etf_asia', label: 'ETF \u2013 Asia' },
+                { key: 'companies', label: 'Stocks (companies)' }
+            ];
+            const buckets = { etf_us: [], etf_europe: [], etf_asia: [], companies: [] };
+            cat.items.forEach(item => {
+                const sg = classifyStockItem(item.name);
+                buckets[sg].push(item);
+            });
+
+            // Compute totals for relative percentages
+            const stocksTotal = cat.total;
+            const etfUsTotal = buckets.etf_us.reduce((s, i) => s + i.val, 0);
+            const etfEuTotal = buckets.etf_europe.reduce((s, i) => s + i.val, 0);
+            const etfAsiaTotal = buckets.etf_asia.reduce((s, i) => s + i.val, 0);
+            const etfTotal = etfUsTotal + etfEuTotal + etfAsiaTotal;
+            const companiesTotal = stocksTotal - etfTotal;
+            const etfPctOfStocks = stocksTotal > 0 ? ((etfTotal / stocksTotal) * 100).toFixed(1) : '0.0';
+            const companiesPctOfStocks = stocksTotal > 0 ? ((companiesTotal / stocksTotal) * 100).toFixed(1) : '0.0';
+
+            // Summary row: ETF vs Companies
+            const summaryRow = `
+            <tr class="subgroup-summary">
+                <td colspan="2">
+                    <span class="subgroup-summary-item">ETF: ${formatMoney(etfTotal)} (${etfPctOfStocks}%)</span>
+                    <span class="subgroup-summary-sep">|</span>
+                    <span class="subgroup-summary-item">Companies: ${formatMoney(companiesTotal)} (${companiesPctOfStocks}%)</span>
+                </td>
+            </tr>`;
+
+            // Region base for ETF region percentages (regions sum to 100%)
+            const regionBase = etfTotal;
+
+            rows = summaryRow + SUBGROUP_ORDER.map(sg => {
+                const items = buckets[sg.key];
+                if (items.length === 0) return '';
+
+                // Subgroup total
+                const sgTotal = items.reduce((s, i) => s + i.val, 0);
+                const sgMoney = sgTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
+
+                // Relative percentage: ETF regions use regionBase, companies use stocksTotal
+                let sgPct;
+                if (sg.key === 'companies') {
+                    sgPct = stocksTotal > 0 ? ((sgTotal / stocksTotal) * 100).toFixed(2) + '%' : '0.00%';
+                } else {
+                    sgPct = regionBase > 0 ? ((sgTotal / regionBase) * 100).toFixed(2) + '%' : '0.00%';
+                }
+
+                // Subgroup delta: sum per-asset deltas
+                let sgDeltaVal = 0;
+                let sgPrevTotal = 0;
+                let sgAdj = 0;
+                items.forEach(item => {
+                    const key = item.key || getAssetKey(cat.id, item.source, item.name);
+                    const ac = comparison?.assets?.[key];
+                    if (ac) {
+                        sgDeltaVal += ac.delta || 0;
+                        sgPrevTotal += ac.previousVal || 0;
+                        sgAdj += (ac.adjustedStart || 0) - (ac.previousVal || 0);
+                    }
+                });
+                const sgDeltaInfo = calculateDelta(sgTotal, sgPrevTotal, sgAdj);
+                const sgDeltaBadge = formatDeltaBadge(sgDeltaInfo);
+
+                const headerRow = `
+            <tr class="subgroup-header">
+                <td><span class="subgroup-label">${sg.label}</span></td>
+                <td class="amount">
+                    ${sgDeltaBadge}
+                    <div class="toggle-btn"
+                         onclick="toggleValue(event, this)"
+                         data-mode="percent"
+                         data-pct="${sgPct}"
+                         data-money="${sgMoney}">
+                        ${sgPct}
+                    </div>
+                </td>
+            </tr>`;
+                return headerRow + items.map(renderItemRow).join('');
+            }).join('');
+        } else {
+            rows = cat.items.map(renderItemRow).join('');
+        }
 
         section.innerHTML = `
             <details>
@@ -1323,6 +1449,8 @@ function renderChart() {
     const chartValues = [];
     const chartColors = [];
     const chartDeltas = []; // MOM delta percentages
+    const chartBorderColors = [];
+    const chartBorderWidths = [];
 
     if (chartMode === 'source') {
         // Aggregate by source
@@ -1366,21 +1494,48 @@ function renderChart() {
             }
         });
     } else {
-        // Category mode (existing)
+        // Category mode – split Stocks into 4 subgroup segments
         categories.forEach(cat => {
-            chartLabels.push(cat.title);
-            chartValues.push(cat.total);
-            chartColors.push(cat.color);
-
-            // Calculate delta of share percentage
-            if (previousSnapshot && currentComparison?.categories?.[cat.id]) {
-                const prevTotal = Object.values(previousSnapshot.categories).reduce((s, c) => s + c.total, 0);
-                const prevCatTotal = previousSnapshot.categories[cat.id]?.total || 0;
-                const prevShare = prevTotal > 0 ? (prevCatTotal / prevTotal) * 100 : 0;
-                const curShare = grandTotal > 0 ? (cat.total / grandTotal) * 100 : 0;
-                chartDeltas.push(curShare - prevShare);
+            if (cat.id === 'stocks') {
+                // Partition into subgroups for chart
+                const sgDefs = [
+                    { key: 'etf_us', label: 'Stocks (ETF USA)' },
+                    { key: 'etf_europe', label: 'Stocks (ETF Europe)' },
+                    { key: 'etf_asia', label: 'Stocks (ETF Asia)' },
+                    { key: 'companies', label: 'Stocks (Companies)' }
+                ];
+                const sgBuckets = { etf_us: 0, etf_europe: 0, etf_asia: 0, companies: 0 };
+                cat.items.forEach(item => {
+                    if (item.isGhost) return;
+                    const sg = classifyStockItem(item.name);
+                    sgBuckets[sg] += item.val;
+                });
+                sgDefs.forEach(sg => {
+                    if (sgBuckets[sg.key] <= 0) return;
+                    chartLabels.push(sg.label);
+                    chartValues.push(sgBuckets[sg.key]);
+                    chartColors.push(cat.color);
+                    chartBorderColors.push('#ffffff');
+                    chartBorderWidths.push(2);
+                    chartDeltas.push(null); // no per-subgroup share delta in chart
+                });
             } else {
-                chartDeltas.push(null);
+                chartLabels.push(cat.title);
+                chartValues.push(cat.total);
+                chartColors.push(cat.color);
+                chartBorderColors.push('transparent');
+                chartBorderWidths.push(0);
+
+                // Calculate delta of share percentage
+                if (previousSnapshot && currentComparison?.categories?.[cat.id]) {
+                    const prevTotal = Object.values(previousSnapshot.categories).reduce((s, c) => s + c.total, 0);
+                    const prevCatTotal = previousSnapshot.categories[cat.id]?.total || 0;
+                    const prevShare = prevTotal > 0 ? (prevCatTotal / prevTotal) * 100 : 0;
+                    const curShare = grandTotal > 0 ? (cat.total / grandTotal) * 100 : 0;
+                    chartDeltas.push(curShare - prevShare);
+                } else {
+                    chartDeltas.push(null);
+                }
             }
         });
     }
@@ -1415,7 +1570,8 @@ function renderChart() {
             datasets: [{
                 data: chartValues,
                 backgroundColor: chartColors,
-                borderWidth: 0,
+                borderWidth: chartMode === 'source' ? 0 : chartBorderWidths,
+                borderColor: chartMode === 'source' ? 'transparent' : chartBorderColors,
                 hoverOffset: 6
             }]
         },

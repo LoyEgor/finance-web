@@ -707,6 +707,45 @@ tr:last-child td {
 }
 
 /* ===========================================
+   Subgroup Headers (ETF/Stocks grouping)
+   =========================================== */
+.subgroup-header td {
+    background: #f7fafc;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 8px 15px;
+}
+
+.subgroup-label {
+    font-weight: 600;
+    font-size: 0.85em;
+    color: #4a5568;
+}
+
+.subgroup-header .toggle-btn {
+    display: inline-block;
+    margin-left: 8px;
+    margin-right: 0;
+    font-size: 0.8em;
+    padding: 2px 8px;
+    min-width: 55px;
+}
+
+.subgroup-summary td {
+    background: #f0f4f8;
+    padding: 6px 15px;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 0.8em;
+    font-family: monospace;
+    color: #4a5568;
+    text-align: center;
+}
+
+.subgroup-summary-sep {
+    margin: 0 10px;
+    color: #cbd5e0;
+}
+
+/* ===========================================
    Forecast Section
    =========================================== */
 .forecast-section {
