@@ -730,21 +730,6 @@ tr:last-child td {
     min-width: 55px;
 }
 
-.subgroup-summary td {
-    background: #f0f4f8;
-    padding: 6px 15px;
-    border-bottom: 1px solid #e2e8f0;
-    font-size: 0.8em;
-    font-family: monospace;
-    color: #4a5568;
-    text-align: center;
-}
-
-.subgroup-summary-sep {
-    margin: 0 10px;
-    color: #cbd5e0;
-}
-
 /* ===========================================
    Forecast Section
    =========================================== */

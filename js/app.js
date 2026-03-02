@@ -1311,7 +1311,7 @@ function renderPortfolio(data, comparison = null) {
                 { key: 'etf_us', label: 'ETF \u2013 USA' },
                 { key: 'etf_europe', label: 'ETF \u2013 Europe' },
                 { key: 'etf_asia', label: 'ETF \u2013 Asia' },
-                { key: 'companies', label: 'Stocks (companies)' }
+                { key: 'companies', label: 'Stocks' }
             ];
             const buckets = { etf_us: [], etf_europe: [], etf_asia: [], companies: [] };
             cat.items.forEach(item => {
@@ -1325,24 +1325,11 @@ function renderPortfolio(data, comparison = null) {
             const etfEuTotal = buckets.etf_europe.reduce((s, i) => s + i.val, 0);
             const etfAsiaTotal = buckets.etf_asia.reduce((s, i) => s + i.val, 0);
             const etfTotal = etfUsTotal + etfEuTotal + etfAsiaTotal;
-            const companiesTotal = stocksTotal - etfTotal;
-            const etfPctOfStocks = stocksTotal > 0 ? ((etfTotal / stocksTotal) * 100).toFixed(1) : '0.0';
-            const companiesPctOfStocks = stocksTotal > 0 ? ((companiesTotal / stocksTotal) * 100).toFixed(1) : '0.0';
-
-            // Summary row: ETF vs Companies
-            const summaryRow = `
-            <tr class="subgroup-summary">
-                <td colspan="2">
-                    <span class="subgroup-summary-item">ETF: ${formatMoney(etfTotal)} (${etfPctOfStocks}%)</span>
-                    <span class="subgroup-summary-sep">|</span>
-                    <span class="subgroup-summary-item">Companies: ${formatMoney(companiesTotal)} (${companiesPctOfStocks}%)</span>
-                </td>
-            </tr>`;
 
             // Region base for ETF region percentages (regions sum to 100%)
             const regionBase = etfTotal;
 
-            rows = summaryRow + SUBGROUP_ORDER.map(sg => {
+            rows = SUBGROUP_ORDER.map(sg => {
                 const items = buckets[sg.key];
                 if (items.length === 0) return '';
 
@@ -1502,7 +1489,7 @@ function renderChart() {
                     { key: 'etf_us', label: 'Stocks (ETF USA)' },
                     { key: 'etf_europe', label: 'Stocks (ETF Europe)' },
                     { key: 'etf_asia', label: 'Stocks (ETF Asia)' },
-                    { key: 'companies', label: 'Stocks (Companies)' }
+                    { key: 'companies', label: 'Stocks' }
                 ];
                 const sgBuckets = { etf_us: 0, etf_europe: 0, etf_asia: 0, companies: 0 };
                 cat.items.forEach(item => {
@@ -1510,14 +1497,17 @@ function renderChart() {
                     const sg = classifyStockItem(item.name);
                     sgBuckets[sg] += item.val;
                 });
+                // First subgroup gets the category title for legend, rest are hidden
+                let firstSg = true;
                 sgDefs.forEach(sg => {
                     if (sgBuckets[sg.key] <= 0) return;
-                    chartLabels.push(sg.label);
+                    chartLabels.push(firstSg ? cat.title : sg.label);
+                    if (firstSg) firstSg = false;
                     chartValues.push(sgBuckets[sg.key]);
                     chartColors.push(cat.color);
                     chartBorderColors.push('#ffffff');
                     chartBorderWidths.push(2);
-                    chartDeltas.push(null); // no per-subgroup share delta in chart
+                    chartDeltas.push(null);
                 });
             } else {
                 chartLabels.push(cat.title);
@@ -1585,7 +1575,10 @@ function renderChart() {
                     labels: {
                         usePointStyle: true,
                         padding: 15,
-                        font: { size: 11 }
+                        font: { size: 11 },
+                        filter: function (item) {
+                            return !item.text.startsWith('Stocks (');
+                        }
                     }
                 },
                 tooltip: {
