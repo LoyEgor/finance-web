@@ -1579,6 +1579,23 @@ function renderChart() {
                         filter: function (item) {
                             return !item.text.startsWith('Stocks (');
                         }
+                    },
+                    onClick: function (e, legendItem, legend) {
+                        const idx = legendItem.index;
+                        const label = chartLabels[idx];
+                        const meta = legend.chart.getDatasetMeta(0);
+                        // If a stocks label, toggle all stocks segments together
+                        if (label && (label.includes('Stocks') || label.startsWith('Stocks ('))) {
+                            const hidden = !meta.data[idx].hidden;
+                            chartLabels.forEach((l, i) => {
+                                if (l.includes('Stocks') || l.startsWith('Stocks (')) {
+                                    meta.data[i].hidden = hidden;
+                                }
+                            });
+                        } else {
+                            meta.data[idx].hidden = !meta.data[idx].hidden;
+                        }
+                        legend.chart.update();
                     }
                 },
                 tooltip: {
