@@ -47,7 +47,7 @@ const ETF_REGION = {
     VTV: 'us', IWD: 'us', SCHV: 'us',
     VYM: 'us', SCHD: 'us', DGRO: 'us', HDV: 'us',
     IWM: 'us', VB: 'us', IJR: 'us', VO: 'us', IJH: 'us', SCHM: 'us',
-    XLK: 'us', VGT: 'us', SOXX: 'us', SMH: 'us',
+    XLK: 'us', VGT: 'us', SOXX: 'us', SMH: 'us', PPA: 'us',
     // Global (merged into us)
     VT: 'us', ACWI: 'us', VEA: 'us', IEFA: 'us', VWO: 'us', IEMG: 'us', EEM: 'us',
     CSPX: 'us', SXR8: 'us', SWDA: 'us', IWDA: 'us', EUNL: 'us', EIMI: 'us', VWCE: 'us',
@@ -84,7 +84,7 @@ function formatMoney(value) {
 // ===========================================
 function getBadgeClass(source) {
     if (!source) return 'b-default';
-    // Clean string: "Google Token" -> "b-google-token"
+    // Clean string: "GOOGLe Token" -> "b-GOOGLe-token"
     return 'b-' + source.toLowerCase().replace(/[^a-z0-9]/g, '-');
 }
 
@@ -364,14 +364,14 @@ function updateForecastUI(stats) {
 
     if (monthEl) {
         const invested = stats.currentMonthStart + stats.currentMonthDeposits;
-        monthEl.parentElement.title = `${fmtMoney(stats.monthProfit)} / (${fmtMoney(stats.currentMonthStart)} + ${fmtMoney(stats.currentMonthDeposits)})\n= ${fmtMoney(stats.monthProfit)} / ${fmtMoney(invested)}\n= ${(stats.monthYield * 100).toFixed(2)}%`;
+        monthEl.parentElement.title = `Profit relative to invested capital this period\n\n${fmtMoney(stats.monthProfit)} / (${fmtMoney(stats.currentMonthStart)} + ${fmtMoney(stats.currentMonthDeposits)})\n= ${fmtMoney(stats.monthProfit)} / ${fmtMoney(invested)}\n= ${(stats.monthYield * 100).toFixed(2)}%`;
     }
     if (ytdEl) {
         const factors = stats.yields.map(y => `(1 + ${(y * 100).toFixed(2)}%)`).join(' × ');
-        ytdEl.parentElement.title = `${factors} - 1\n= ${(stats.ytd * 100).toFixed(2)}%\nYTD P&L: ${fmtMoney(stats.currentEndBalance)} - ${fmtMoney(stats.accumulatedNetFlow)} = ${fmtMoney(stats.ytdProfit)}`;
+        ytdEl.parentElement.title = `Compounded return since Jan 1st\n\n${factors} - 1\n= ${(stats.ytd * 100).toFixed(2)}%\nYTD P&L: ${fmtMoney(stats.currentEndBalance)} - ${fmtMoney(stats.accumulatedNetFlow)} = ${fmtMoney(stats.ytdProfit)}`;
     }
     if (annualEl) {
-        annualEl.parentElement.title = `(1 + ${(stats.ytd * 100).toFixed(2)}%)^(12/${stats.monthsPassed}) - 1\n= ${(stats.projected * 100).toFixed(2)}%`;
+        annualEl.parentElement.title = `Projected annual return if current YTD pace continues\n\n(1 + ${(stats.ytd * 100).toFixed(2)}%)^(12/${stats.monthsPassed}) - 1\n= ${(stats.projected * 100).toFixed(2)}%`;
     }
 }
 
@@ -1124,7 +1124,7 @@ async function loadMonth(monthId) {
         const startBalance = prevData ? calculateTotalBalance(prevData) : 0;
 
         // Calculate performance (PnL uses snapshot-filtered, stats use calendar-filtered)
-        const performance = calculatePerformance(startBalance, endBalance, flowTransfers, isFirstMonth, calendarTransfers);
+        const performance = calculatePerformance(startBalance, endBalance, flowTransfers, isFirstMonth);
 
         // --- FORECASTING 2.0 ---
         try {
@@ -1486,10 +1486,10 @@ function renderChart() {
             if (cat.id === 'stocks') {
                 // Partition into subgroups for chart
                 const sgDefs = [
-                    { key: 'etf_us', label: 'Stocks (ETF USA)' },
-                    { key: 'etf_europe', label: 'Stocks (ETF Europe)' },
-                    { key: 'etf_asia', label: 'Stocks (ETF Asia)' },
-                    { key: 'companies', label: 'Stocks (other)' }
+                    { key: 'companies', label: 'Stocks' },
+                    { key: 'etf_us', label: 'ETF - USA' },
+                    { key: 'etf_europe', label: 'ETF - Europe' },
+                    { key: 'etf_asia', label: 'ETF - Asia' }
                 ];
                 const sgBuckets = { etf_us: 0, etf_europe: 0, etf_asia: 0, companies: 0 };
                 cat.items.forEach(item => {
@@ -1577,18 +1577,19 @@ function renderChart() {
                         padding: 15,
                         font: { size: 11 },
                         filter: function (item) {
-                            return !item.text.startsWith('Stocks (');
+                            return !item.text.startsWith('ETF - ');
                         }
                     },
                     onClick: function (e, legendItem, legend) {
                         const idx = legendItem.index;
                         const label = chartLabels[idx];
                         const meta = legend.chart.getDatasetMeta(0);
-                        // If a stocks label, toggle all stocks segments together
-                        if (label && (label.includes('Stocks') || label.startsWith('Stocks ('))) {
+                        // If a stocks/ETF label, toggle all stocks segments together
+                        const isStocksGroup = label && (label === 'Stocks' || label.startsWith('ETF - '));
+                        if (isStocksGroup) {
                             const hidden = !meta.data[idx].hidden;
                             chartLabels.forEach((l, i) => {
-                                if (l.includes('Stocks') || l.startsWith('Stocks (')) {
+                                if (l === 'Stocks' || l.startsWith('ETF - ')) {
                                     meta.data[i].hidden = hidden;
                                 }
                             });
