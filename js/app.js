@@ -76,7 +76,7 @@ function classifyStockItem(name) {
 // ===========================================
 function formatMoney(value) {
     const sign = value >= 0 ? '' : '-';
-    return sign + Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
+    return sign + Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $';
 }
 
 // ===========================================
@@ -298,11 +298,18 @@ window.toggleForecast = function (e, el) {
 
     el.setAttribute('data-mode', newMode);
 
+    let displayStr;
     if (newMode === 'money') {
-        el.innerText = el.getAttribute('data-money');
+        displayStr = el.getAttribute('data-money');
     } else {
-        el.innerText = el.getAttribute('data-pct');
+        displayStr = el.getAttribute('data-pct');
     }
+    el.innerText = displayStr;
+
+    // Update color based on displayed value sign
+    el.classList.remove('perf-positive', 'perf-negative');
+    if (displayStr && displayStr.startsWith('+')) el.classList.add('perf-positive');
+    else if (displayStr && displayStr.startsWith('-')) el.classList.add('perf-negative');
 };
 
 // ===========================================
@@ -372,6 +379,56 @@ function updateForecastUI(stats) {
     }
     if (annualEl) {
         annualEl.parentElement.title = `Projected annual return if current YTD pace continues\n\n(1 + ${(stats.ytd * 100).toFixed(2)}%)^(12/${stats.monthsPassed}) - 1\n= ${(stats.projected * 100).toFixed(2)}%`;
+    }
+
+    // --- Benchmark comparison ---
+    const benchDepositEl = document.getElementById('bench-deposit');
+    const benchVtEl = document.getElementById('bench-vt');
+    const benchVooEl = document.getElementById('bench-voo');
+
+    const updateBench = (el, pctVal, moneyVal) => {
+        if (!el) return;
+        if (pctVal === null || pctVal === undefined) {
+            el.innerText = '—';
+            el.className = 'forecast-value';
+            el.removeAttribute('onclick');
+            el.style.cursor = '';
+            el.removeAttribute('data-mode');
+            return;
+        }
+
+        const pctStr = fmtPct(pctVal);
+        const moneyStr = fmtMoney(moneyVal);
+
+        el.setAttribute('data-pct', pctStr);
+        el.setAttribute('data-money', moneyStr);
+        el.setAttribute('onclick', 'toggleForecast(event, this)');
+
+        const mode = el.getAttribute('data-mode') || 'percent';
+        el.setAttribute('data-mode', mode);
+        el.innerText = mode === 'money' ? moneyStr : pctStr;
+        el.style.cursor = 'pointer';
+
+        el.className = 'forecast-value';
+        if (pctVal > 0) el.classList.add('perf-positive');
+        else if (pctVal < 0) el.classList.add('perf-negative');
+    };
+
+    if (stats.benchmarks) {
+        const b = stats.benchmarks;
+        updateBench(benchDepositEl, b.deposit, b.depositMoney);
+        updateBench(benchVtEl, b.vt, b.vtMoney);
+        updateBench(benchVooEl, b.voo, b.vooMoney);
+
+        const investedStr = formatMoney(stats.currentMonthStart + stats.currentMonthDeposits);
+
+        if (benchDepositEl) benchDepositEl.parentElement.title = `Deposit 3.5% yield: ${fmtPct(b.deposit)}\nPotential profit: ${fmtPct(b.deposit)} * ${investedStr} = ${fmtMoney(b.depositMoney)}`;
+        if (benchVtEl) benchVtEl.parentElement.title = `VT (Market) yield: ${fmtPct(b.vt)}\nPotential profit: ${fmtPct(b.vt)} * ${investedStr} = ${fmtMoney(b.vtMoney)}`;
+        if (benchVooEl) benchVooEl.parentElement.title = `VOO (S&P 500) yield: ${fmtPct(b.voo)}\nPotential profit: ${fmtPct(b.voo)} * ${investedStr} = ${fmtMoney(b.vooMoney)}`;
+    } else {
+        updateBench(benchDepositEl, null);
+        updateBench(benchVtEl, null);
+        updateBench(benchVooEl, null);
     }
 }
 
@@ -458,7 +515,7 @@ function calculateProjectedAnnual(ytd, monthsPassed) {
 
 // 5. Orchestrator
 // 5. Orchestrator
-async function calculateYearStats(currentMonthId) {
+async function calculateYearStats(currentMonthId, benchmarksData) {
     // 1. Fetch sequence of months from Jan up to currentMonthId
     const sequence = await fetchYearSequence(currentMonthId);
 
@@ -468,6 +525,8 @@ async function calculateYearStats(currentMonthId) {
     let currentMonthStart = 0;
     let currentMonthEnd = 0;
     let currentMonthDeposits = 0;
+    let currentMonthPrevDate = null;
+    let currentMonthCurrDate = null;
 
     // Initialize Start Balance for Jan 1st as 0 (Assumption: Portfolio starts fresh or rollover not tracked yet)
     // In a real system, we would need the Dec 31st snapshot of previous year.
@@ -531,6 +590,8 @@ async function calculateYearStats(currentMonthId) {
             currentMonthStart = startBalance;
             currentMonthEnd = endBalance;
             currentMonthDeposits = mDeposits;
+            currentMonthPrevDate = prevSnapshotDate;
+            currentMonthCurrDate = currentSnapshotDate;
         }
 
         // Prepare for next month
@@ -553,6 +614,39 @@ async function calculateYearStats(currentMonthId) {
     // Projected Profit: Extra money on top of current balance
     const projectedProfit = currentEndBalance * projected;
 
+    // --- Benchmark calculations (monthly period) ---
+    let benchmarks = null;
+    if (benchmarksData && currentMonthPrevDate && currentMonthCurrDate) {
+        // Deposit 3.5% annual: pro-rata for this period
+        const d0 = new Date(currentMonthPrevDate);
+        const d1 = new Date(currentMonthCurrDate);
+        const daysDiff = (d1 - d0) / (1000 * 60 * 60 * 24);
+        const depositMonth = Math.pow(1 + 0.035, daysDiff / 365) - 1;
+
+        // ETF returns: price change between prev and current snapshot
+        const vtPrices = benchmarksData['VT'] || {};
+        const vooPrices = benchmarksData['VOO'] || {};
+
+        const vtPrev = vtPrices[currentMonthPrevDate];
+        const vtCurr = vtPrices[currentMonthCurrDate];
+        const vooPrev = vooPrices[currentMonthPrevDate];
+        const vooCurr = vooPrices[currentMonthCurrDate];
+
+        const vtMonth = (vtPrev && vtCurr) ? (vtCurr / vtPrev - 1) : null;
+        const vooMonth = (vooPrev && vooCurr) ? (vooCurr / vooPrev - 1) : null;
+
+        const invested = currentMonthStart + currentMonthDeposits;
+
+        benchmarks = {
+            deposit: depositMonth,
+            depositMoney: depositMonth * invested,
+            vt: vtMonth,
+            vtMoney: vtMonth !== null ? vtMonth * invested : null,
+            voo: vooMonth,
+            vooMoney: vooMonth !== null ? vooMonth * invested : null
+        };
+    }
+
     return {
         monthYield: currentMonthYield,
         monthProfit: currentMonthProfit,
@@ -566,7 +660,8 @@ async function calculateYearStats(currentMonthId) {
         accumulatedNetFlow: accumulatedNetFlow,
         currentMonthStart: currentMonthStart,
         currentMonthEnd: currentMonthEnd,
-        currentMonthDeposits: currentMonthDeposits
+        currentMonthDeposits: currentMonthDeposits,
+        benchmarks: benchmarks
     };
 }
 
@@ -1003,6 +1098,10 @@ async function fetchTransfersData(filename) {
     return await dataService.fetchTransfersData(filename);
 }
 
+async function fetchBenchmarks() {
+    return await dataService._fetch('benchmarks.json');
+}
+
 // Fetch ALL transfer files for a specific month
 // Tries: transfers-YYYY-MM.json and transfers-YYYY-MM-DD.json for days 01-31
 async function fetchTransfersForMonth(monthId) {
@@ -1128,7 +1227,8 @@ async function loadMonth(monthId) {
 
         // --- FORECASTING 2.0 ---
         try {
-            const forecastStats = await calculateYearStats(monthId);
+            const benchmarksData = await fetchBenchmarks();
+            const forecastStats = await calculateYearStats(monthId, benchmarksData);
             updateForecastUI(forecastStats);
         } catch (err) {
             console.error('Forecasting error:', err);
