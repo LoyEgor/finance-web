@@ -21,7 +21,7 @@
     <meta name="theme-color" content="#1a1a2e">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="./css/styles.css?v=5">
+    <link rel="stylesheet" href="./css/styles.css?v=6">
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -166,10 +166,11 @@
         </div>
     </div>
 
-    <!-- Data Service -->
-    <script src="./js/data-service.js?v=5"></script>
-    <!-- App Logic -->
-    <script src="./js/app.js?v=5"></script>
+    <script>
+        var _v = Date.now();
+        document.write('<script src="./js/data-service.js?v=' + _v + '"><\/script>');
+        document.write('<script src="./js/app.js?v=' + _v + '"><\/script>');
+    </script>
 
 </body>
 

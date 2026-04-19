@@ -778,8 +778,14 @@ window.showCalcTooltip = function (e, el) {
 
     // Position tooltip
     const rect = el.getBoundingClientRect();
-    tooltip.style.left = rect.left + 'px';
     tooltip.style.top = (rect.bottom + 8) + 'px';
+    tooltip.style.left = rect.left + 'px';
+
+    // Adjust if overflows right edge
+    const tooltipRect = tooltip.getBoundingClientRect();
+    if (tooltipRect.right > window.innerWidth - 8) {
+        tooltip.style.left = (window.innerWidth - tooltipRect.width - 8) + 'px';
+    }
 
     // Close on click outside
     const closeHandler = (event) => {
@@ -863,10 +869,17 @@ function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth 
     // Calculate calendar-month deposits/withdrawals for UI display
     let calDeposits = 0;
     let calWithdraws = 0;
+    const depositDetails = [];
+    const withdrawDetails = [];
     const calSrc = calendarTransfers || transfers || [];
     calSrc.forEach(t => {
-        if (t.type === 'deposit') calDeposits += t.amount;
-        else if (t.type === 'withdraw') calWithdraws += t.amount;
+        if (t.type === 'deposit') {
+            calDeposits += t.amount;
+            depositDetails.push({ name: t.name, source: t.source, amount: t.amount });
+        } else if (t.type === 'withdraw') {
+            calWithdraws += t.amount;
+            withdrawDetails.push({ name: t.name, source: t.source, amount: t.amount });
+        }
     });
 
     // ZERO KILOMETER LOGIC (First Month)
@@ -876,6 +889,8 @@ function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth 
             endBalance,
             totalDeposits: calDeposits,
             totalWithdraws: calWithdraws,
+            depositDetails,
+            withdrawDetails,
             netFlow: calDeposits - calWithdraws,
             profit: 0, // Forced 0
             yieldPercent: 0 // Forced 0
@@ -903,6 +918,8 @@ function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth 
         endBalance,
         totalDeposits: calDeposits,
         totalWithdraws: calWithdraws,
+        depositDetails,
+        withdrawDetails,
         netFlow,
         profit,
         yieldPercent
@@ -1036,12 +1053,36 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
     }
 
     // Deposits (always positive display)
-    document.getElementById('perf-deposits').textContent =
-        '+' + formatMoney(performance.totalDeposits);
+    const depositsEl = document.getElementById('perf-deposits');
+    depositsEl.textContent = '+' + formatMoney(performance.totalDeposits);
+    depositsEl.parentElement.title = '';
+    if (performance.depositDetails && performance.depositDetails.length > 0) {
+        const depLines = performance.depositDetails.map(d => `+${formatMoney(d.amount)}`);
+        depLines.push(`Total: +${formatMoney(performance.totalDeposits)}`);
+        depositsEl.dataset.calc = encodeURIComponent(depLines.join('\n'));
+        depositsEl.style.cursor = 'pointer';
+        depositsEl.onclick = function(e) { showCalcTooltip(e, this); };
+    } else {
+        delete depositsEl.dataset.calc;
+        depositsEl.style.cursor = '';
+        depositsEl.onclick = null;
+    }
 
     // Withdraws (always show as positive number with minus context)
-    document.getElementById('perf-withdraws').textContent =
-        '-' + formatMoney(performance.totalWithdraws);
+    const withdrawsEl = document.getElementById('perf-withdraws');
+    withdrawsEl.textContent = '-' + formatMoney(performance.totalWithdraws);
+    withdrawsEl.parentElement.title = '';
+    if (performance.withdrawDetails && performance.withdrawDetails.length > 0) {
+        const wdLines = performance.withdrawDetails.map(d => `-${formatMoney(d.amount)}`);
+        wdLines.push(`Total: -${formatMoney(performance.totalWithdraws)}`);
+        withdrawsEl.dataset.calc = encodeURIComponent(wdLines.join('\n'));
+        withdrawsEl.style.cursor = 'pointer';
+        withdrawsEl.onclick = function(e) { showCalcTooltip(e, this); };
+    } else {
+        delete withdrawsEl.dataset.calc;
+        withdrawsEl.style.cursor = '';
+        withdrawsEl.onclick = null;
+    }
 
     // Net Flow (with sign and color)
     const netFlowEl = document.getElementById('perf-netflow');
