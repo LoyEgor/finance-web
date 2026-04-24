@@ -17,11 +17,11 @@
     <meta name="apple-mobile-web-app-title" content="Portfolio">
 
     <!-- Web App Manifest (PWA / Android) -->
-    <link rel="manifest" href="./manifest.json?v=1777067166">
+    <link rel="manifest" href="./manifest.json?v=1777067878">
     <meta name="theme-color" content="#1a1a2e">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="./css/styles.css?v=1777067166">
+    <link rel="stylesheet" href="./css/styles.css?v=1777067878">
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -30,7 +30,19 @@
 <body>
 
     <div class="header-row">
-        <select id="monthSelector"></select>
+        <div class="month-nav-group">
+            <button id="btn-prev-month" class="nav-btn" title="Previous month" aria-label="Previous month">
+                <svg viewBox="0 0 24 24">
+                    <path d="M15 18l-6-6 6-6" />
+                </svg>
+            </button>
+            <select id="monthSelector"></select>
+            <button id="btn-next-month" class="nav-btn" title="Next month" aria-label="Next month">
+                <svg viewBox="0 0 24 24">
+                    <path d="M9 6l6 6-6 6" />
+                </svg>
+            </button>
+        </div>
         <button id="btn-settings" class="settings-btn" title="Settings">
             <svg viewBox="0 0 24 24">
                 <path
@@ -190,8 +202,8 @@
         </div>
     </div>
 
-    <script src="./js/data-service.js?v=1777067166"></script>
-    <script src="./js/app.js?v=1777067166"></script>
+    <script src="./js/data-service.js?v=1777067878"></script>
+    <script src="./js/app.js?v=1777067878"></script>
 
 </body>
 

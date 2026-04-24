@@ -1064,9 +1064,9 @@ async function populateMonthSelector() {
         selector.innerHTML = '<option>No data available</option>';
     }
 
-    // Add change event listener
+    // Add change event listener — animate like an arrow/swipe switch
     selector.addEventListener('change', (e) => {
-        loadMonth(e.target.value);
+        navigateToMonthAnimated(e.target.value);
     });
 }
 
@@ -1422,8 +1422,6 @@ let preloadStarted = false;
 
 async function loadMonth(monthId) {
     const listContainer = document.getElementById('portfolio-list');
-    const perfSummary = document.getElementById('performance-summary');
-    const portfolioView = document.getElementById('view-portfolio');
 
     currentMonthId = monthId;
 
@@ -1439,10 +1437,6 @@ async function loadMonth(monthId) {
     if (!primaryCached) {
         listContainer.innerHTML = '<div class="loading">Loading data...</div>';
     }
-
-    // Fade out during switch — CSS transition handles the animation
-    if (perfSummary) perfSummary.classList.add('switching');
-    if (portfolioView) portfolioView.classList.add('switching');
 
     try {
         // Load all data in parallel: Current Portfolio, Previous Portfolio, Current Transfers, Previous Transfers
@@ -1536,11 +1530,8 @@ async function loadMonth(monthId) {
         // Reset to portfolio view
         switchTab('portfolio');
 
-        // Fade back in on next frame
-        requestAnimationFrame(() => {
-            if (perfSummary) perfSummary.classList.remove('switching');
-            if (portfolioView) portfolioView.classList.remove('switching');
-        });
+        // Update arrow disabled states at boundaries
+        updateMonthArrows();
 
         // Warm up cache for all other months in the background so subsequent
         // swipes render instantly. Fire-and-forget; errors are swallowed.
@@ -1552,8 +1543,6 @@ async function loadMonth(monthId) {
     } catch (error) {
         console.error('Failed to load portfolio data:', error);
         showError(`Failed to load data: ${error.message}`);
-        if (perfSummary) perfSummary.classList.remove('switching');
-        if (portfolioView) portfolioView.classList.remove('switching');
     }
 }
 
@@ -2512,74 +2501,227 @@ function initSettingsUI() {
 }
 
 // ===========================================
-// SWIPE NAVIGATION (Month switching)
+// MONTH NAVIGATION — live-drag swipe + animated transitions (arrows / selector)
 // ===========================================
-function setupSwipeNavigation() {
-    let startX = null;
-    let startY = null;
-    let startTarget = null;
-    let startTime = 0;
+const IGNORE_SELECTOR = 'canvas, select, input, textarea, button, .modal-overlay, .toggle-btn, .delta, .forecast-value, .perf-value, .perf-tab';
+const DOMINANT_THRESHOLD = 8;   // px to decide horizontal vs vertical intent
+const COMMIT_DISTANCE = 60;     // px past which the drag commits
+const COMMIT_VELOCITY = 0.5;    // px/ms flick velocity that also commits
 
-    const IGNORE_SELECTOR = 'canvas, select, input, textarea, button, .modal-overlay, .toggle-btn, .delta, .forecast-value, .perf-value, .perf-tab';
+let isMonthAnimating = false;
+
+function cardElements() {
+    return [
+        document.getElementById('performance-summary'),
+        document.getElementById('view-portfolio')
+    ].filter(Boolean);
+}
+
+function applyCardTransform(tx, opacity, withTransition) {
+    cardElements().forEach(el => {
+        el.style.transition = withTransition
+            ? 'transform 0.22s cubic-bezier(0.22,1,0.36,1), opacity 0.22s ease'
+            : 'none';
+        el.style.transform = tx;
+        el.style.opacity = String(opacity);
+    });
+}
+
+function resetCardInlineStyles() {
+    cardElements().forEach(el => {
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.opacity = '';
+    });
+}
+
+// Perform a month switch with slide-out → render → slide-in animation.
+// direction: 'next' (new month ahead) → card exits left, new enters from right;
+// direction: 'prev' (new month before) → card exits right, new enters from left.
+async function animateMonthTransition(nextId, direction, currentDx = 0) {
+    if (!nextId || nextId === currentMonthId) {
+        snapCardBack();
+        return;
+    }
+    isMonthAnimating = true;
+
+    const dir = direction === 'next' ? -1 : 1; // sign for exit translation
+    const exitX = `${dir * (window.innerWidth + 60)}px`;
+
+    // Slide current content out in gesture direction
+    applyCardTransform(`translateX(${exitX})`, 0, true);
+
+    // Wait for animation to finish (approx transition duration)
+    await new Promise(r => setTimeout(r, 220));
+
+    // Keep the selector in sync before the render
+    const selector = document.getElementById('monthSelector');
+    if (selector) selector.value = nextId;
+
+    // Render the target month (cached → instant)
+    await loadMonth(nextId);
+
+    // Place card off-screen on the *opposite* side without transition
+    const incomingX = `${-dir * (window.innerWidth + 60)}px`;
+    applyCardTransform(`translateX(${incomingX})`, 0, false);
+
+    // Force reflow so the next transition animates from this offset
+    void document.body.offsetHeight;
+
+    // Animate in to centre
+    applyCardTransform('translateX(0)', 1, true);
+
+    // Clean up inline styles after animation completes
+    setTimeout(() => {
+        resetCardInlineStyles();
+        isMonthAnimating = false;
+    }, 260);
+}
+
+function snapCardBack() {
+    applyCardTransform('translateX(0)', 1, true);
+    setTimeout(() => {
+        resetCardInlineStyles();
+    }, 240);
+}
+
+// Drag-during-touch: apply partial transform that follows the finger.
+function applyDragTransform(dx) {
+    const opacity = Math.max(0.4, 1 - Math.abs(dx) / 700);
+    // Gentle resistance so the card slightly lags behind the finger
+    const translated = dx * 0.75;
+    applyCardTransform(`translateX(${translated}px)`, opacity, false);
+}
+
+// Unified entry for month navigation from arrows / selector.
+function navigateToMonthAnimated(nextId) {
+    if (!availableMonths || !currentMonthId) {
+        loadMonth(nextId);
+        return;
+    }
+    if (isMonthAnimating) return;
+    const currentIdx = availableMonths.findIndex(m => m.id === currentMonthId);
+    const newIdx = availableMonths.findIndex(m => m.id === nextId);
+    if (currentIdx === -1 || newIdx === -1 || newIdx === currentIdx) {
+        loadMonth(nextId);
+        return;
+    }
+    const direction = newIdx > currentIdx ? 'next' : 'prev';
+    animateMonthTransition(nextId, direction);
+}
+
+function setupSwipeNavigation() {
+    let state = 'idle'; // idle | tracking | committed
+    let startX = 0, startY = 0, startTime = 0, startTarget = null;
 
     document.body.addEventListener('touchstart', (e) => {
-        if (e.touches.length !== 1) {
-            startX = null;
+        if (e.touches.length !== 1 || isMonthAnimating) {
+            state = 'idle';
             return;
         }
         const t = e.touches[0];
         startX = t.clientX;
         startY = t.clientY;
-        startTarget = e.target;
         startTime = Date.now();
+        startTarget = e.target;
+        state = 'tracking';
     }, { passive: true });
 
-    document.body.addEventListener('touchend', (e) => {
-        if (startX === null) return;
-        const t = e.changedTouches[0];
+    document.body.addEventListener('touchmove', (e) => {
+        if (state === 'idle' || e.touches.length !== 1) return;
+        const t = e.touches[0];
         const dx = t.clientX - startX;
         const dy = t.clientY - startY;
-        const dt = Date.now() - startTime;
-        const ax = startX, ay = startY;
-        startX = null;
-        startY = null;
 
-        // Ignore taps/long presses
-        if (dt > 600) return;
+        if (state === 'tracking') {
+            // Vertical intent dominates → leave alone (native scroll)
+            if (Math.abs(dy) > DOMINANT_THRESHOLD && Math.abs(dy) > Math.abs(dx)) {
+                state = 'idle';
+                return;
+            }
+            // Horizontal intent confirmed
+            if (Math.abs(dx) > DOMINANT_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
+                if (startTarget?.closest?.(IGNORE_SELECTOR)) { state = 'idle'; return; }
+                const modal = document.getElementById('modal-settings');
+                if (modal && modal.style.display !== 'none') { state = 'idle'; return; }
+                if (!availableMonths || availableMonths.length === 0 || !currentMonthId) { state = 'idle'; return; }
+                state = 'committed';
+            } else {
+                return;
+            }
+        }
 
-        // Require clear horizontal gesture
-        if (Math.abs(dx) < 60) return;
-        if (Math.abs(dx) < Math.abs(dy) * 1.5) return;
+        if (state === 'committed') {
+            if (e.cancelable) e.preventDefault();
+            applyDragTransform(dx);
+        }
+    }, { passive: false });
 
-        // Ignore swipes that started on interactive/modal elements
-        if (startTarget && typeof startTarget.closest === 'function'
-            && startTarget.closest(IGNORE_SELECTOR)) {
+    const finishTouch = (e) => {
+        if (state !== 'committed') {
+            state = 'idle';
             return;
         }
+        const t = e.changedTouches[0];
+        const dx = t.clientX - startX;
+        const dt = Date.now() - startTime;
+        const velocity = dt > 0 ? Math.abs(dx) / dt : 0;
 
-        // Ignore if settings modal is open
-        const modal = document.getElementById('modal-settings');
-        if (modal && modal.style.display !== 'none') return;
+        state = 'idle';
 
-        if (!availableMonths || availableMonths.length === 0 || !currentMonthId) return;
         const idx = availableMonths.findIndex(m => m.id === currentMonthId);
-        if (idx === -1) return;
+        const committed = Math.abs(dx) > COMMIT_DISTANCE || velocity > COMMIT_VELOCITY;
 
-        let nextIdx;
-        if (dx < 0) {
-            // Swipe left -> next month
-            nextIdx = idx + 1;
-        } else {
-            // Swipe right -> previous month
-            nextIdx = idx - 1;
+        if (committed) {
+            const delta = dx < 0 ? +1 : -1;
+            const newIdx = idx + delta;
+            if (newIdx >= 0 && newIdx < availableMonths.length) {
+                const nextId = availableMonths[newIdx].id;
+                const direction = delta > 0 ? 'next' : 'prev';
+                const selector = document.getElementById('monthSelector');
+                if (selector) selector.value = nextId;
+                animateMonthTransition(nextId, direction, dx);
+                return;
+            }
         }
-        if (nextIdx < 0 || nextIdx >= availableMonths.length) return;
+        snapCardBack();
+    };
 
-        const nextId = availableMonths[nextIdx].id;
-        const selector = document.getElementById('monthSelector');
-        if (selector) selector.value = nextId;
-        loadMonth(nextId);
-    }, { passive: true });
+    document.body.addEventListener('touchend', finishTouch, { passive: true });
+    document.body.addEventListener('touchcancel', finishTouch, { passive: true });
+}
+
+// ===========================================
+// MONTH ARROW BUTTONS
+// ===========================================
+function setupMonthArrows() {
+    const prev = document.getElementById('btn-prev-month');
+    const next = document.getElementById('btn-next-month');
+
+    const navBy = (delta) => {
+        if (isMonthAnimating) return;
+        if (!availableMonths || !currentMonthId) return;
+        const idx = availableMonths.findIndex(m => m.id === currentMonthId);
+        const newIdx = idx + delta;
+        if (newIdx < 0 || newIdx >= availableMonths.length) return;
+        navigateToMonthAnimated(availableMonths[newIdx].id);
+    };
+
+    prev?.addEventListener('click', () => navBy(-1));
+    next?.addEventListener('click', () => navBy(+1));
+}
+
+function updateMonthArrows() {
+    const prev = document.getElementById('btn-prev-month');
+    const next = document.getElementById('btn-next-month');
+    if (!availableMonths || !currentMonthId) {
+        if (prev) prev.disabled = true;
+        if (next) next.disabled = true;
+        return;
+    }
+    const idx = availableMonths.findIndex(m => m.id === currentMonthId);
+    if (prev) prev.disabled = idx <= 0;
+    if (next) next.disabled = idx >= availableMonths.length - 1;
 }
 
 async function init() {
@@ -2601,6 +2743,7 @@ async function init() {
     setupTabHandlers();
     setupChartToggle();
     setupSwipeNavigation();
+    setupMonthArrows();
 }
 
 // Start the app
