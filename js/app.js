@@ -1999,24 +1999,10 @@ function renderChart() {
                             return !item.text.startsWith('ETF - ');
                         }
                     },
-                    onClick: function (e, legendItem, legend) {
-                        const idx = legendItem.index;
-                        const label = chartLabels[idx];
-                        const meta = legend.chart.getDatasetMeta(0);
-                        // If a stocks/ETF label, toggle all stocks segments together
-                        const isStocksGroup = label && (label === 'Stocks' || label.startsWith('ETF - '));
-                        if (isStocksGroup) {
-                            const hidden = !meta.data[idx].hidden;
-                            chartLabels.forEach((l, i) => {
-                                if (l === 'Stocks' || l.startsWith('ETF - ')) {
-                                    meta.data[i].hidden = hidden;
-                                }
-                            });
-                        } else {
-                            meta.data[idx].hidden = !meta.data[idx].hidden;
-                        }
-                        legend.chart.update();
-                    }
+                    // Legend click toggling is disabled — visual feedback (strikethrough)
+                    // doesn't behave correctly for the custom Stocks/ETF subgroup, and the
+                    // feature isn't worth the complexity. Leave the legend as a passive key.
+                    onClick: () => { /* no-op */ }
                 },
                 tooltip: {
                     footerColor: '#9ca3af',
@@ -2065,6 +2051,25 @@ const zeroLinePlugin = {
         ctx.restore();
     }
 };
+
+// On mobile, Chart.js shows the tooltip on tap and leaves it visible until
+// another tap on the chart. Tapping anywhere else should clear it.
+function setupPerfChartTooltipDismiss() {
+    const dismiss = (e) => {
+        if (!performanceChart) return;
+        const canvas = document.getElementById('performanceChart');
+        if (!canvas) return;
+        if (e.target === canvas) return; // tap on chart itself — keep tooltip
+        const tooltip = performanceChart.tooltip;
+        if (!tooltip || typeof tooltip.getActiveElements !== 'function') return;
+        if (tooltip.getActiveElements().length === 0) return;
+        performanceChart.setActiveElements([]);
+        tooltip.setActiveElements([], { x: 0, y: 0 });
+        performanceChart.update('none');
+    };
+    document.addEventListener('click', dismiss);
+    document.addEventListener('touchstart', dismiss, { passive: true });
+}
 
 function renderPerformanceChart(stats) {
     const section = document.getElementById('performance-chart-section');
@@ -2744,6 +2749,7 @@ async function init() {
     setupChartToggle();
     setupSwipeNavigation();
     setupMonthArrows();
+    setupPerfChartTooltipDismiss();
 }
 
 // Start the app
