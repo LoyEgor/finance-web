@@ -13,7 +13,26 @@ class DataService {
             path: 'data' // Path to data folder in repo
         };
 
+        // In-memory cache for fetched files (key: sourceType:filename → data|null).
+        // Survives entire session, invalidated on config change.
+        this._cache = new Map();
+
+        this._inflight = new Map(); // dedupe concurrent fetches for the same key
+
         this.loadConfig();
+    }
+
+    _cacheKey(filename) {
+        return `${this.config.sourceType}:${filename}`;
+    }
+
+    isCached(filename) {
+        return this._cache.has(this._cacheKey(filename));
+    }
+
+    clearCache() {
+        this._cache.clear();
+        this._inflight.clear();
     }
 
     // ===========================================
@@ -37,6 +56,7 @@ class DataService {
     saveConfig(newConfig) {
         this.config = { ...this.config, ...newConfig };
         localStorage.setItem('portfolio_config', JSON.stringify(this.config));
+        this.clearCache();
     }
 
     resetConfig() {
@@ -49,6 +69,7 @@ class DataService {
             path: 'data'
         };
         localStorage.removeItem('portfolio_config');
+        this.clearCache();
     }
 
     isRemote() {
@@ -64,13 +85,27 @@ class DataService {
     // CORE FETCHING
     // ===========================================
 
-    // Core internal fetcher that handles the logic
+    // Core internal fetcher that handles the logic — cached per session.
     async _fetch(filename) {
-        if (this.isRemote()) {
-            return await this._fetchRemote(filename);
-        } else {
-            return await this._fetchLocal(filename);
-        }
+        const key = this._cacheKey(filename);
+        if (this._cache.has(key)) return this._cache.get(key);
+
+        // Dedupe concurrent requests for the same key (preload + on-demand may overlap)
+        if (this._inflight.has(key)) return this._inflight.get(key);
+
+        const promise = (this.isRemote() ? this._fetchRemote(filename) : this._fetchLocal(filename))
+            .then(data => {
+                this._cache.set(key, data);
+                this._inflight.delete(key);
+                return data;
+            })
+            .catch(err => {
+                this._inflight.delete(key);
+                throw err;
+            });
+
+        this._inflight.set(key, promise);
+        return promise;
     }
 
     async _fetchLocal(filename) {

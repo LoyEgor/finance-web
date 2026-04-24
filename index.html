@@ -17,11 +17,11 @@
     <meta name="apple-mobile-web-app-title" content="Portfolio">
 
     <!-- Web App Manifest (PWA / Android) -->
-    <link rel="manifest" href="./manifest.json">
+    <link rel="manifest" href="./manifest.json?v=1777067166">
     <meta name="theme-color" content="#1a1a2e">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="./css/styles.css?v=6">
+    <link rel="stylesheet" href="./css/styles.css?v=1777067166">
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -107,6 +107,30 @@
                     <span class="forecast-value" id="bench-voo">—</span>
                 </div>
             </div>
+            <div class="forecast-grid forecast-projection">
+                <div class="forecast-item">
+                    <span class="forecast-label">Avg M. Yield</span>
+                    <span class="forecast-value" id="proj-avg-yield">—</span>
+                </div>
+                <div class="forecast-item">
+                    <span class="forecast-label">Avg Net Flow</span>
+                    <span class="forecast-value" id="proj-avg-netflow">—</span>
+                </div>
+                <div class="forecast-item">
+                    <span class="forecast-label">Year-End Total</span>
+                    <span class="forecast-value" id="proj-year-end">—</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Comparison Chart -->
+        <div id="performance-chart-section" class="forecast-section performance-chart-section" style="display: none;">
+            <div class="forecast-header">
+                <span>YTD Performance Comparison</span>
+            </div>
+            <div class="performance-chart-wrapper">
+                <canvas id="performanceChart"></canvas>
+            </div>
         </div>
     </div>
 
@@ -166,11 +190,8 @@
         </div>
     </div>
 
-    <script>
-        var _v = Date.now();
-        document.write('<script src="./js/data-service.js?v=' + _v + '"><\/script>');
-        document.write('<script src="./js/app.js?v=' + _v + '"><\/script>');
-    </script>
+    <script src="./js/data-service.js?v=1777067166"></script>
+    <script src="./js/app.js?v=1777067166"></script>
 
 </body>
 

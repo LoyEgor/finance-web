@@ -794,6 +794,44 @@ tr:last-child td {
     margin-top: 0;
 }
 
+.forecast-projection {
+    border-top: 1px dashed #e2e8f0;
+    padding-top: 15px;
+    margin-top: 0;
+}
+
+.performance-chart-section {
+    margin-top: 15px;
+}
+
+.performance-chart-wrapper {
+    position: relative;
+    height: 320px;
+    padding: 15px;
+}
+
+@media (max-width: 600px) {
+    .performance-chart-wrapper {
+        height: 260px;
+        padding: 10px;
+    }
+}
+
+/* ===========================================
+   Month-switch transition (swipe / selector)
+   =========================================== */
+#view-portfolio,
+#performance-summary {
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    will-change: opacity, transform;
+}
+
+#view-portfolio.switching,
+#performance-summary.switching {
+    opacity: 0.4;
+    transform: translateY(2px);
+}
+
 .forecast-item {
     background: white;
     /* Remove rgba(255, 255, 255, 0.15) */

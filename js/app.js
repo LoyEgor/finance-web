@@ -17,8 +17,10 @@ const MONTH_NAMES = [
 // GLOBAL STATE
 // ===========================================
 let portfolioChart = null;
+let performanceChart = null;
 let chartMode = 'category'; // 'category' or 'source'
 let currentMonthId = null;
+let availableMonths = [];
 let currentPortfolioData = null;
 let currentTransfersData = [];
 let currentSnapshot = null;
@@ -77,6 +79,23 @@ function classifyStockItem(name) {
 function formatMoney(value) {
     const sign = value >= 0 ? '' : '-';
     return sign + Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $';
+}
+
+// Short money for compact tiles: "2.8k", "62.8k", "1.23M" (no currency symbol).
+// Values under 1k keep 2-decimal precision.
+function formatMoneyShort(value) {
+    const abs = Math.abs(value);
+    const sign = value < 0 ? '-' : '';
+    if (abs < 1000) {
+        return sign + abs.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+    if (abs < 1_000_000) {
+        return sign + (abs / 1000).toFixed(1) + 'k';
+    }
+    if (abs < 1_000_000_000) {
+        return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    }
+    return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
 }
 
 // ===========================================
@@ -333,7 +352,7 @@ function updateForecastUI(stats) {
 
     const fmtMoney = (val) => {
         const sign = val >= 0 ? '+' : '';
-        return `${sign}${formatMoney(val)}`;
+        return `${sign}${formatMoneyShort(val)}`;
     };
 
     // Update values
@@ -430,6 +449,62 @@ function updateForecastUI(stats) {
         updateBench(benchVtEl, null);
         updateBench(benchVooEl, null);
     }
+
+    // --- Projection row ---
+    const projAvgYieldEl = document.getElementById('proj-avg-yield');
+    const projAvgNetflowEl = document.getElementById('proj-avg-netflow');
+    const projYearEndEl = document.getElementById('proj-year-end');
+
+    const p = stats.projection;
+    if (p) {
+        // Avg Yield %
+        if (projAvgYieldEl) {
+            projAvgYieldEl.innerText = fmtPct(p.avgYield);
+            projAvgYieldEl.className = 'forecast-value';
+            if (p.avgYield > 0) projAvgYieldEl.classList.add('perf-positive');
+            else if (p.avgYield < 0) projAvgYieldEl.classList.add('perf-negative');
+            const samples = Math.max(0, stats.monthsPassed - 1);
+            projAvgYieldEl.parentElement.title = `Average monthly yield across ${samples} month(s) (excluding Jan baseline).\nUsed to project the portfolio forward to year-end.`;
+        }
+
+        // Avg Net Flow $
+        if (projAvgNetflowEl) {
+            projAvgNetflowEl.innerText = fmtMoney(p.avgNetFlow);
+            projAvgNetflowEl.className = 'forecast-value';
+            if (p.avgNetFlow > 0) projAvgNetflowEl.classList.add('perf-positive');
+            else if (p.avgNetFlow < 0) projAvgNetflowEl.classList.add('perf-negative');
+            projAvgNetflowEl.parentElement.title = `Average monthly net flow (deposits - withdrawals) excluding Jan baseline.\nApplied each remaining month in the year-end projection.`;
+        }
+
+        // Year-End Total: default $ balance, toggle to % growth from now
+        if (projYearEndEl) {
+            const pctStr = fmtPct(p.projectedGrowthFromNow);
+            const moneyStr = formatMoneyShort(p.projectedEndBalance);
+
+            projYearEndEl.setAttribute('data-pct', pctStr);
+            projYearEndEl.setAttribute('data-money', moneyStr);
+            projYearEndEl.setAttribute('onclick', 'toggleForecast(event, this)');
+
+            const mode = projYearEndEl.getAttribute('data-mode') || 'money';
+            projYearEndEl.setAttribute('data-mode', mode);
+            projYearEndEl.innerText = mode === 'money' ? moneyStr : pctStr;
+            projYearEndEl.style.cursor = 'pointer';
+
+            projYearEndEl.className = 'forecast-value';
+            if (p.projectedGrowthFromNow > 0) projYearEndEl.classList.add('perf-positive');
+            else if (p.projectedGrowthFromNow < 0) projYearEndEl.classList.add('perf-negative');
+
+            projYearEndEl.parentElement.title = `Projected year-end portfolio value.\n\nStart: ${formatMoney(stats.currentEndBalance)}\n+${p.remainingMonths} month(s) × (yield ${(p.avgYield * 100).toFixed(2)}% + net flow ${fmtMoney(p.avgNetFlow)})\n= ${formatMoney(p.projectedEndBalance)}\n\nGrowth from now: ${fmtPct(p.projectedGrowthFromNow)}\nProjected P&L: ${fmtMoney(p.projectedEndPnL)} (ROI ${fmtPct(p.projectedTotalROI)})`;
+        }
+    } else {
+        [projAvgYieldEl, projAvgNetflowEl, projYearEndEl].forEach(el => {
+            if (!el) return;
+            el.innerText = '—';
+            el.className = 'forecast-value';
+            el.removeAttribute('onclick');
+            el.style.cursor = '';
+        });
+    }
 }
 
 
@@ -513,13 +588,44 @@ function calculateProjectedAnnual(ytd, monthsPassed) {
     return Math.pow(base, exponent) - 1;
 }
 
-// 5. Orchestrator
+// Helper: build per-category transfer list (includes moves as deposit/withdraw)
+function buildCategoryTransfers(transfers, catId) {
+    const result = [];
+    transfers.forEach(t => {
+        if (t.type === 'deposit' && t.category === catId) {
+            result.push({ type: 'deposit', amount: t.amount });
+        } else if (t.type === 'withdraw' && t.category === catId) {
+            result.push({ type: 'withdraw', amount: t.amount });
+        } else if (t.type === 'move') {
+            if (t.from_category === catId) result.push({ type: 'withdraw', amount: t.amount });
+            if (t.to_category === catId) result.push({ type: 'deposit', amount: t.amount });
+        }
+    });
+    return result;
+}
+
+// Helper: compound a list of monthly yields into cumulative series (null breaks compounding)
+function compoundSeries(monthlyYields) {
+    const result = [];
+    let compound = 1;
+    for (const y of monthlyYields) {
+        if (y === null || y === undefined) {
+            result.push(null);
+        } else {
+            compound *= (1 + y);
+            result.push(compound - 1);
+        }
+    }
+    return result;
+}
+
 // 5. Orchestrator
 async function calculateYearStats(currentMonthId, benchmarksData) {
     // 1. Fetch sequence of months from Jan up to currentMonthId
     const sequence = await fetchYearSequence(currentMonthId);
 
     const yields = [];
+    const netFlows = []; // per-month net flow for averaging
     let currentMonthYield = 0;
     let currentMonthProfit = 0;
     let currentMonthStart = 0;
@@ -533,6 +639,12 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     let prevBalance = 0;
     let accumulatedNetFlow = 0; // To track invested capital for YTD profit
 
+    // --- Series tracking ---
+    const monthLabels = [];
+    const categoryYields = {}; // catId -> [monthly yields]
+    const benchmarkYields = { vt: [], voo: [], deposit: [] };
+    let prevCategoryBalances = {};
+
     // Collect ALL transfer groups across all months for date-based filtering
     const allTransferGroups = sequence.flatMap(item => item.transferGroups || []);
 
@@ -540,8 +652,18 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     let prevSnapshotDate = null;
     for (let idx = 0; idx < sequence.length; idx++) {
         const item = sequence[idx];
+
+        // Month label (Jan, Feb, ...)
+        const mIdx = parseInt(item.id.split('-')[1]) - 1;
+        monthLabels.push(MONTH_NAMES[mIdx].substring(0, 3));
+
         if (!item.data) {
             yields.push(0);
+            netFlows.push(0);
+            Object.keys(categoryYields).forEach(catId => categoryYields[catId].push(0));
+            benchmarkYields.vt.push(null);
+            benchmarkYields.voo.push(null);
+            benchmarkYields.deposit.push(0);
             continue;
         }
 
@@ -567,6 +689,23 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         });
         const mNetFlow = mDeposits - mWithdraws;
 
+        // Build current category balances
+        const currCategoryBalances = {};
+        item.data.portfolio.forEach(cat => {
+            currCategoryBalances[cat.id] = cat.items.reduce((s, it) => s + it.val, 0);
+        });
+
+        // Ensure all seen categories have a series (zero-fill past months)
+        const allCatIds = new Set([
+            ...Object.keys(prevCategoryBalances),
+            ...Object.keys(currCategoryBalances)
+        ]);
+        allCatIds.forEach(catId => {
+            if (!categoryYields[catId]) {
+                categoryYields[catId] = new Array(idx).fill(0);
+            }
+        });
+
         // Calculate Yield for this specific month
         let yieldVal = 0;
         let profitVal = 0;
@@ -576,13 +715,55 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             yieldVal = 0;
             profitVal = 0;
             accumulatedNetFlow += endBalance;
+            allCatIds.forEach(catId => categoryYields[catId].push(0));
         } else {
             yieldVal = calculateSimpleYield(startBalance, endBalance, monthTransfers);
             profitVal = endBalance - (startBalance + mNetFlow);
             accumulatedNetFlow += mNetFlow;
+
+            // Per-category yields
+            allCatIds.forEach(catId => {
+                const catStart = prevCategoryBalances[catId] || 0;
+                const catEnd = currCategoryBalances[catId] || 0;
+                if (catStart === 0 && catEnd === 0) {
+                    categoryYields[catId].push(0);
+                    return;
+                }
+                const catTransfers = buildCategoryTransfers(monthTransfers, catId);
+                // If category appears fresh without tracked inflow, treat as 0 to avoid wild 100% spike
+                const catDeposits = catTransfers.reduce((s, t) => s + (t.type === 'deposit' ? t.amount : 0), 0);
+                if (catStart === 0 && catDeposits === 0 && catEnd > 0) {
+                    categoryYields[catId].push(0);
+                    return;
+                }
+                categoryYields[catId].push(calculateSimpleYield(catStart, catEnd, catTransfers));
+            });
+        }
+
+        // Benchmark monthly yields
+        if (idx === 0 || !prevSnapshotDate) {
+            benchmarkYields.vt.push(idx === 0 ? 0 : null);
+            benchmarkYields.voo.push(idx === 0 ? 0 : null);
+            benchmarkYields.deposit.push(0);
+        } else {
+            const d0 = new Date(prevSnapshotDate);
+            const d1 = new Date(currentSnapshotDate);
+            const daysDiff = (d1 - d0) / (1000 * 60 * 60 * 24);
+            const depositMonth = Math.pow(1 + 0.035, daysDiff / 365) - 1;
+            benchmarkYields.deposit.push(depositMonth);
+
+            const vtPrices = benchmarksData?.['VT'] || {};
+            const vooPrices = benchmarksData?.['VOO'] || {};
+            const vtPrev = vtPrices[prevSnapshotDate];
+            const vtCurr = vtPrices[currentSnapshotDate];
+            const vooPrev = vooPrices[prevSnapshotDate];
+            const vooCurr = vooPrices[currentSnapshotDate];
+            benchmarkYields.vt.push((vtPrev && vtCurr) ? (vtCurr / vtPrev - 1) : null);
+            benchmarkYields.voo.push((vooPrev && vooCurr) ? (vooCurr / vooPrev - 1) : null);
         }
 
         yields.push(yieldVal);
+        netFlows.push(idx === 0 ? 0 : mNetFlow);
 
         if (item.id === currentMonthId) {
             currentMonthYield = yieldVal;
@@ -597,6 +778,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         // Prepare for next month
         prevSnapshotDate = currentSnapshotDate;
         prevBalance = endBalance;
+        prevCategoryBalances = currCategoryBalances;
     }
 
     // YTD is compounded yield of ALL months up to current
@@ -613,6 +795,51 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
 
     // Projected Profit: Extra money on top of current balance
     const projectedProfit = currentEndBalance * projected;
+
+    // --- Projection (average-based, to end of year) ---
+    // Skip idx=0 (zero kilometer baseline)
+    const realYields = yields.slice(1);
+    const realNetFlows = netFlows.slice(1);
+    const avgYield = realYields.length > 0
+        ? realYields.reduce((s, y) => s + y, 0) / realYields.length : 0;
+    const avgNetFlow = realNetFlows.length > 0
+        ? realNetFlows.reduce((s, n) => s + n, 0) / realNetFlows.length : 0;
+
+    const remainingMonths = Math.max(0, 12 - monthsPassed);
+
+    let projectedEndBalance = currentEndBalance;
+    for (let m = 0; m < remainingMonths; m++) {
+        projectedEndBalance = projectedEndBalance * (1 + avgYield) + avgNetFlow;
+    }
+    const projectedTotalInvested = accumulatedNetFlow + avgNetFlow * remainingMonths;
+    const projectedEndPnL = projectedEndBalance - projectedTotalInvested;
+    const projectedGrowthFromNow = currentEndBalance > 0
+        ? (projectedEndBalance - currentEndBalance) / currentEndBalance : 0;
+    const projectedTotalROI = projectedTotalInvested > 0
+        ? projectedEndPnL / projectedTotalInvested : 0;
+
+    const projection = {
+        avgYield,
+        avgNetFlow,
+        remainingMonths,
+        projectedEndBalance,
+        projectedEndPnL,
+        projectedGrowthFromNow,
+        projectedTotalROI,
+        projectedTotalInvested
+    };
+
+    // --- Cumulative series (per-month compound) ---
+    const totalSeries = compoundSeries(yields);
+    const categorySeries = {};
+    Object.keys(categoryYields).forEach(catId => {
+        categorySeries[catId] = compoundSeries(categoryYields[catId]);
+    });
+    const benchmarkSeries = {
+        vt: compoundSeries(benchmarkYields.vt),
+        voo: compoundSeries(benchmarkYields.voo),
+        deposit: compoundSeries(benchmarkYields.deposit)
+    };
 
     // --- Benchmark calculations (monthly period) ---
     let benchmarks = null;
@@ -661,7 +888,14 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         currentMonthStart: currentMonthStart,
         currentMonthEnd: currentMonthEnd,
         currentMonthDeposits: currentMonthDeposits,
-        benchmarks: benchmarks
+        benchmarks: benchmarks,
+        // Series for chart (real data only, no forecast extension)
+        monthLabels: monthLabels,
+        totalSeries: totalSeries,
+        categorySeries: categorySeries,
+        benchmarkSeries: benchmarkSeries,
+        // Projection (used by forecast tiles, not by chart)
+        projection: projection
     };
 }
 
@@ -1054,7 +1288,7 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
 
     // Deposits (always positive display)
     const depositsEl = document.getElementById('perf-deposits');
-    depositsEl.textContent = '+' + formatMoney(performance.totalDeposits);
+    depositsEl.textContent = '+' + formatMoneyShort(performance.totalDeposits);
     depositsEl.parentElement.title = '';
     if (performance.depositDetails && performance.depositDetails.length > 0) {
         const depLines = performance.depositDetails.map(d => `+${formatMoney(d.amount)}`);
@@ -1070,7 +1304,7 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
 
     // Withdraws (always show as positive number with minus context)
     const withdrawsEl = document.getElementById('perf-withdraws');
-    withdrawsEl.textContent = '-' + formatMoney(performance.totalWithdraws);
+    withdrawsEl.textContent = '-' + formatMoneyShort(performance.totalWithdraws);
     withdrawsEl.parentElement.title = '';
     if (performance.withdrawDetails && performance.withdrawDetails.length > 0) {
         const wdLines = performance.withdrawDetails.map(d => `-${formatMoney(d.amount)}`);
@@ -1088,7 +1322,7 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
     const netFlowEl = document.getElementById('perf-netflow');
     const netFlowTabEl = document.getElementById('tab-netflow');
     const netFlowSign = performance.netFlow >= 0 ? '+' : '';
-    netFlowEl.textContent = netFlowSign + formatMoney(performance.netFlow);
+    netFlowEl.textContent = netFlowSign + formatMoneyShort(performance.netFlow);
     netFlowTabEl.title = `+${formatMoney(performance.totalDeposits)} - ${formatMoney(performance.totalWithdraws)} = ${netFlowSign}${formatMoney(performance.netFlow)}`;
     netFlowEl.classList.remove('perf-positive', 'perf-negative');
     if (performance.netFlow > 0) {
@@ -1113,7 +1347,7 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
     const pnlTabEl = document.getElementById('tab-pnl');
     const pnlSign = performance.profit >= 0 ? '+' : '';
     const yieldStr = performance.yieldPercent.toFixed(2);
-    pnlEl.textContent = `${pnlSign}${formatMoney(performance.profit)} (${pnlSign}${yieldStr}%)`;
+    pnlEl.textContent = `${pnlSign}${formatMoneyShort(performance.profit)} (${pnlSign}${yieldStr}%)`;
 
     // Set tooltip with PnL formula
     const nfSign = performance.netFlow >= 0 ? '+' : '';
@@ -1184,16 +1418,31 @@ async function fetchTransfersForMonth(monthId) {
 // ===========================================
 // LOAD MONTH DATA
 // ===========================================
+let preloadStarted = false;
+
 async function loadMonth(monthId) {
     const listContainer = document.getElementById('portfolio-list');
+    const perfSummary = document.getElementById('performance-summary');
+    const portfolioView = document.getElementById('view-portfolio');
 
-    // Show loading state
-    listContainer.innerHTML = '<div class="loading">Loading data...</div>';
     currentMonthId = monthId;
 
     // Determine previous month
     const prevMonthId = getPreviousMonthId(monthId);
     const isFirstMonth = prevMonthId === null;
+
+    // Fast path: if primary files are already cached, skip "Loading..." flash
+    const primaryCached =
+        dataService.isCached(`${monthId}.json`) &&
+        (!prevMonthId || dataService.isCached(`${prevMonthId}.json`));
+
+    if (!primaryCached) {
+        listContainer.innerHTML = '<div class="loading">Loading data...</div>';
+    }
+
+    // Fade out during switch — CSS transition handles the animation
+    if (perfSummary) perfSummary.classList.add('switching');
+    if (portfolioView) portfolioView.classList.add('switching');
 
     try {
         // Load all data in parallel: Current Portfolio, Previous Portfolio, Current Transfers, Previous Transfers
@@ -1271,9 +1520,11 @@ async function loadMonth(monthId) {
             const benchmarksData = await fetchBenchmarks();
             const forecastStats = await calculateYearStats(monthId, benchmarksData);
             updateForecastUI(forecastStats);
+            renderPerformanceChart(forecastStats);
         } catch (err) {
             console.error('Forecasting error:', err);
             updateForecastUI(null);
+            renderPerformanceChart(null);
         }
         // -----------------------
 
@@ -1285,9 +1536,47 @@ async function loadMonth(monthId) {
         // Reset to portfolio view
         switchTab('portfolio');
 
+        // Fade back in on next frame
+        requestAnimationFrame(() => {
+            if (perfSummary) perfSummary.classList.remove('switching');
+            if (portfolioView) portfolioView.classList.remove('switching');
+        });
+
+        // Warm up cache for all other months in the background so subsequent
+        // swipes render instantly. Fire-and-forget; errors are swallowed.
+        if (!preloadStarted) {
+            preloadStarted = true;
+            setTimeout(() => preloadMonthsInBackground(monthId), 300);
+        }
+
     } catch (error) {
         console.error('Failed to load portfolio data:', error);
         showError(`Failed to load data: ${error.message}`);
+        if (perfSummary) perfSummary.classList.remove('switching');
+        if (portfolioView) portfolioView.classList.remove('switching');
+    }
+}
+
+// Fire-and-forget: fetch data for every other available month so subsequent
+// swipes/selector changes hit the DataService cache instead of the network.
+async function preloadMonthsInBackground(skipMonthId) {
+    if (!availableMonths || availableMonths.length === 0) return;
+
+    const others = availableMonths.filter(m => m.id !== skipMonthId);
+    // Prioritise neighbours of the current month first (user most likely to swipe there)
+    const skipIdx = availableMonths.findIndex(m => m.id === skipMonthId);
+    others.sort((a, b) => {
+        const da = Math.abs(availableMonths.findIndex(m => m.id === a.id) - skipIdx);
+        const db = Math.abs(availableMonths.findIndex(m => m.id === b.id) - skipIdx);
+        return da - db;
+    });
+
+    // Fetch portfolio snapshots first (1 file each), then transfer files.
+    for (const month of others) {
+        try {
+            fetchPortfolioData(month.id).catch(() => {});
+            fetchTransfersForMonth(month.id).catch(() => {});
+        } catch (e) { /* swallow */ }
     }
 }
 
@@ -1764,6 +2053,172 @@ function renderChart() {
 }
 
 // ===========================================
+// RENDER PERFORMANCE CHART (YTD Comparison)
+// ===========================================
+// Plugin: draw a horizontal line at y=0 so positive vs negative is visible
+const zeroLinePlugin = {
+    id: 'zeroLine',
+    afterDatasetsDraw: (chart) => {
+        const yScale = chart.scales.y;
+        if (!yScale) return;
+        const zeroY = yScale.getPixelForValue(0);
+        const { top, bottom, left, right } = chart.chartArea;
+        if (zeroY < top - 1 || zeroY > bottom + 1) return;
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.strokeStyle = '#a0aec0';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(left, zeroY);
+        ctx.lineTo(right, zeroY);
+        ctx.stroke();
+        ctx.restore();
+    }
+};
+
+function renderPerformanceChart(stats) {
+    const section = document.getElementById('performance-chart-section');
+    const canvas = document.getElementById('performanceChart');
+    if (!section || !canvas) return;
+
+    if (performanceChart) {
+        performanceChart.destroy();
+        performanceChart = null;
+    }
+
+    if (!stats || !stats.monthLabels || stats.monthLabels.length < 2) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+
+    const datasets = [];
+
+    // Category lines (use color from globalCategories), sorted by order
+    const catIds = Object.keys(stats.categorySeries || {}).sort((a, b) => {
+        const oa = globalCategories[a]?.order ?? 999;
+        const ob = globalCategories[b]?.order ?? 999;
+        return oa - ob;
+    });
+
+    // Default-hidden categories (low-volatility noise)
+    const DEFAULT_HIDDEN_CATS = new Set(['usd', 'safe']);
+
+    catIds.forEach(catId => {
+        const meta = globalCategories[catId];
+        const label = meta ? meta.title : catId;
+        const color = meta?.color || '#a0aec0';
+        datasets.push({
+            label,
+            data: stats.categorySeries[catId].map(v => v === null ? null : v * 100),
+            borderColor: color,
+            backgroundColor: color,
+            borderWidth: 2,
+            pointRadius: 2,
+            tension: 0.25,
+            spanGaps: true,
+            hidden: DEFAULT_HIDDEN_CATS.has(catId)
+        });
+    });
+
+    // Total portfolio (black, thick)
+    datasets.push({
+        label: 'Total',
+        data: stats.totalSeries.map(v => v === null ? null : v * 100),
+        borderColor: '#1a202c',
+        backgroundColor: '#1a202c',
+        borderWidth: 3,
+        pointRadius: 3,
+        tension: 0.25,
+        spanGaps: true
+    });
+
+    // Benchmarks
+    const hasBench = (arr) => Array.isArray(arr) && arr.some(v => v !== null && v !== 0);
+    if (hasBench(stats.benchmarkSeries?.vt)) {
+        datasets.push({
+            label: 'VT (Market)',
+            data: stats.benchmarkSeries.vt.map(v => v === null ? null : v * 100),
+            borderColor: '#718096',
+            backgroundColor: '#718096',
+            borderWidth: 1.5,
+            pointRadius: 2,
+            tension: 0.25,
+            spanGaps: true
+        });
+    }
+    if (hasBench(stats.benchmarkSeries?.voo)) {
+        datasets.push({
+            label: 'VOO (S&P 500)',
+            data: stats.benchmarkSeries.voo.map(v => v === null ? null : v * 100),
+            borderColor: '#a0aec0',
+            backgroundColor: '#a0aec0',
+            borderWidth: 1.5,
+            pointRadius: 2,
+            tension: 0.25,
+            spanGaps: true
+        });
+    }
+    if (hasBench(stats.benchmarkSeries?.deposit)) {
+        datasets.push({
+            label: 'Deposit 3.5%',
+            data: stats.benchmarkSeries.deposit.map(v => v === null ? null : v * 100),
+            borderColor: '#cbd5e0',
+            backgroundColor: '#cbd5e0',
+            borderWidth: 1.5,
+            pointRadius: 2,
+            tension: 0.1,
+            spanGaps: true,
+            hidden: true // low-volatility baseline — hidden by default
+        });
+    }
+
+    const ctx = canvas.getContext('2d');
+    performanceChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: stats.monthLabels,
+            datasets
+        },
+        plugins: [zeroLinePlugin],
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: {
+                        usePointStyle: true,
+                        padding: 10,
+                        font: { size: 11 }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function (context) {
+                            const v = context.parsed.y;
+                            if (v === null || v === undefined) return `${context.dataset.label}: —`;
+                            const sign = v >= 0 ? '+' : '';
+                            return `${context.dataset.label}: ${sign}${v.toFixed(2)}%`;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { display: false },
+                y: { display: false }
+            }
+        }
+    });
+}
+
+// ===========================================
 // CHART TOGGLE HANDLER
 // ===========================================
 function setupChartToggle() {
@@ -2056,6 +2511,77 @@ function initSettingsUI() {
     });
 }
 
+// ===========================================
+// SWIPE NAVIGATION (Month switching)
+// ===========================================
+function setupSwipeNavigation() {
+    let startX = null;
+    let startY = null;
+    let startTarget = null;
+    let startTime = 0;
+
+    const IGNORE_SELECTOR = 'canvas, select, input, textarea, button, .modal-overlay, .toggle-btn, .delta, .forecast-value, .perf-value, .perf-tab';
+
+    document.body.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) {
+            startX = null;
+            return;
+        }
+        const t = e.touches[0];
+        startX = t.clientX;
+        startY = t.clientY;
+        startTarget = e.target;
+        startTime = Date.now();
+    }, { passive: true });
+
+    document.body.addEventListener('touchend', (e) => {
+        if (startX === null) return;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - startX;
+        const dy = t.clientY - startY;
+        const dt = Date.now() - startTime;
+        const ax = startX, ay = startY;
+        startX = null;
+        startY = null;
+
+        // Ignore taps/long presses
+        if (dt > 600) return;
+
+        // Require clear horizontal gesture
+        if (Math.abs(dx) < 60) return;
+        if (Math.abs(dx) < Math.abs(dy) * 1.5) return;
+
+        // Ignore swipes that started on interactive/modal elements
+        if (startTarget && typeof startTarget.closest === 'function'
+            && startTarget.closest(IGNORE_SELECTOR)) {
+            return;
+        }
+
+        // Ignore if settings modal is open
+        const modal = document.getElementById('modal-settings');
+        if (modal && modal.style.display !== 'none') return;
+
+        if (!availableMonths || availableMonths.length === 0 || !currentMonthId) return;
+        const idx = availableMonths.findIndex(m => m.id === currentMonthId);
+        if (idx === -1) return;
+
+        let nextIdx;
+        if (dx < 0) {
+            // Swipe left -> next month
+            nextIdx = idx + 1;
+        } else {
+            // Swipe right -> previous month
+            nextIdx = idx - 1;
+        }
+        if (nextIdx < 0 || nextIdx >= availableMonths.length) return;
+
+        const nextId = availableMonths[nextIdx].id;
+        const selector = document.getElementById('monthSelector');
+        if (selector) selector.value = nextId;
+        loadMonth(nextId);
+    }, { passive: true });
+}
+
 async function init() {
     // Init Settings UI
     initSettingsUI();
@@ -2074,6 +2600,7 @@ async function init() {
     // 2. Setup tab handlers
     setupTabHandlers();
     setupChartToggle();
+    setupSwipeNavigation();
 }
 
 // Start the app

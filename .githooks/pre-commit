@@ -1,0 +1,21 @@
+#!/bin/sh
+# Auto-bump cache-buster `?v=<ts>` in index.html when any tracked asset changes.
+# Watches:  css/*.css  |  js/*.js  |  manifest.json
+# Enable once per clone:  git config core.hooksPath .githooks
+
+set -e
+
+staged=$(git diff --cached --name-only)
+if echo "$staged" | grep -qE '^(css/.+\.css|js/.+\.js|manifest\.json)$'; then
+    HTML="index.html"
+    [ -f "$HTML" ] || exit 0
+
+    ts=$(date +%s)
+    # Replace every "?v=<digits>" in index.html with the new timestamp.
+    # BSD sed (macOS) and GNU sed both accept -i.bak; bak removed right after.
+    sed -i.bak -E "s|\?v=[0-9]+|?v=${ts}|g" "$HTML"
+    rm -f "$HTML.bak"
+    git add "$HTML"
+    echo "pre-commit: cache version bumped to ${ts}"
+fi
+exit 0
