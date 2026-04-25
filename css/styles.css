@@ -467,19 +467,18 @@ tr:last-child td {
    Header Row
    =========================================== */
 .header-row {
+    position: relative;
     display: flex;
-    justify-content: space-between;
+    justify-content: center;
     align-items: center;
-    gap: 10px;
     margin-bottom: 15px;
+    min-height: 30px;
 }
 
 .month-nav-group {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex: 1;
-    justify-content: center;
 }
 
 /* Shared compact sizing for header controls */
@@ -874,6 +873,107 @@ tr:last-child td {
 }
 
 /* ===========================================
+   Performance Comparison Table
+   =========================================== */
+.performance-table-wrapper {
+    padding: 12px 6px 14px 6px;
+}
+
+/* Compact, centred Chart/Table toggle inside the performance section. */
+.perf-view-toggle {
+    width: fit-content;
+    margin: 12px auto 0;
+}
+
+.performance-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    table-layout: fixed;
+}
+
+.performance-table thead th {
+    text-align: right;
+    padding: 6px 4px;
+    color: #4a5568;
+    font-weight: 600;
+    border-bottom: 1px solid #e2e8f0;
+    white-space: nowrap;
+    font-size: 11px;
+    user-select: none;
+}
+
+.performance-table thead th[data-sort-key],
+.performance-table thead th[data-toggle-bench] {
+    cursor: pointer;
+}
+
+.performance-table thead th[data-sort-key]:hover,
+.performance-table thead th[data-toggle-bench]:hover {
+    color: #2d3748;
+}
+
+/* α header is interactive (toggles VOO/VT) — slightly emphasised so the
+   "(VOO)/(VT)" label feels tappable rather than passive. */
+.performance-table thead th[data-toggle-bench] {
+    color: #2d3748;
+}
+
+.performance-table thead th:first-child {
+    text-align: left;
+    width: 30%;
+    padding-left: 6px;
+}
+
+.performance-table thead th.sort-active {
+    color: #2d3748;
+}
+
+.performance-table thead th.sort-active::after {
+    content: ' ↑';
+    font-size: 10px;
+}
+
+.performance-table thead th.sort-active.desc::after {
+    content: ' ↓';
+}
+
+.performance-table tbody td {
+    padding: 7px 4px;
+    text-align: right;
+    border-bottom: 1px solid #f1f5f9;
+    white-space: nowrap;
+}
+
+.performance-table tbody td:first-child {
+    text-align: left;
+    font-weight: 500;
+    color: #2d3748;
+    padding-left: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.performance-table tr.row-stocks-total td {
+    background: #f7fafc;
+    font-weight: 600;
+    border-top: 1px solid #e2e8f0;
+}
+
+.performance-table tr.row-benchmark td {
+    color: #718096;
+    font-style: italic;
+}
+
+.performance-table tr.row-benchmark.first td {
+    border-top: 1px solid #e2e8f0;
+}
+
+/* Colours come from the project's global .perf-positive / .perf-negative
+   (#22c55e / #ef4444). Sharpe uses the same logic — one green, one red. */
+
+/* ===========================================
    Month-switch transition (swipe / arrows / selector)
    =========================================== */
 #view-portfolio,
@@ -921,6 +1021,12 @@ tr:last-child td {
    Settings Button
    =========================================== */
 .settings-btn {
+    /* Pinned to the right edge of the header so it doesn't shift the centred
+       month-nav-group. */
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
     background: #edf2f7;
     color: #4a5568;
     width: 30px;
@@ -929,7 +1035,7 @@ tr:last-child td {
     display: flex;
     justify-content: center;
     align-items: center;
-    transition: all 0.15s;
+    transition: all 0.15s, transform 0.15s;
     flex-shrink: 0;
     padding: 0;
 }
@@ -940,7 +1046,7 @@ tr:last-child td {
 }
 
 .settings-btn:active {
-    transform: scale(0.92);
+    transform: translateY(-50%) scale(0.92);
 }
 
 .settings-btn svg {

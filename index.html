@@ -17,11 +17,11 @@
     <meta name="apple-mobile-web-app-title" content="Portfolio">
 
     <!-- Web App Manifest (PWA / Android) -->
-    <link rel="manifest" href="./manifest.json?v=1777070088">
+    <link rel="manifest" href="./manifest.json?v=1777126545">
     <meta name="theme-color" content="#1a1a2e">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="./css/styles.css?v=1777070088">
+    <link rel="stylesheet" href="./css/styles.css?v=1777126545">
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -140,8 +140,17 @@
             <div class="forecast-header">
                 <span>YTD Performance Comparison</span>
             </div>
-            <div class="performance-chart-wrapper">
+            <div class="chart-toggle-group perf-view-toggle" id="perfViewToggle">
+                <div class="chart-toggle-option active" data-view="chart">Chart</div>
+                <div class="chart-toggle-option" data-view="table">Table</div>
+            </div>
+
+            <div id="perf-view-chart" class="performance-chart-wrapper">
                 <canvas id="performanceChart"></canvas>
+            </div>
+
+            <div id="perf-view-table" class="performance-table-wrapper" style="display: none;">
+                <table id="performanceTable" class="performance-table"></table>
             </div>
         </div>
     </div>
@@ -202,8 +211,8 @@
         </div>
     </div>
 
-    <script src="./js/data-service.js?v=1777070088"></script>
-    <script src="./js/app.js?v=1777070088"></script>
+    <script src="./js/data-service.js?v=1777126545"></script>
+    <script src="./js/app.js?v=1777126545"></script>
 
 </body>
 

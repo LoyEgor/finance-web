@@ -19,6 +19,11 @@ const MONTH_NAMES = [
 let portfolioChart = null;
 let performanceChart = null;
 let chartMode = 'category'; // 'category' or 'source'
+let perfViewMode = 'chart'; // 'chart' or 'table'
+let alphaBenchmark = 'VOO'; // 'VOO' or 'VT' — α reference for the table
+let tableSortKey = null;    // null | 'alloc' | 'ytd' | 'vol' | 'alpha' | 'sharpe'
+let tableSortDir = 'desc';
+let lastPerfStats = null;
 let currentMonthId = null;
 let availableMonths = [];
 let currentPortfolioData = null;
@@ -604,6 +609,54 @@ function buildCategoryTransfers(transfers, catId) {
     return result;
 }
 
+// Sub-bucket key for a stocks item (companies vs ETF region).
+function stockSubKeyFor(name) {
+    const sub = classifyStockItem(name);
+    if (sub === 'companies') return 'stocks_companies';
+    if (sub === 'etf_us') return 'stocks_etf_us';
+    if (sub === 'etf_europe') return 'stocks_etf_europe';
+    if (sub === 'etf_asia') return 'stocks_etf_asia';
+    return null;
+}
+
+// Build per-sub-bucket transfer lists for the stocks category.
+// `stocks_etf` aggregates all three ETF regions.
+function buildStockSubTransfersAll(transfers) {
+    const out = {
+        stocks_companies: [],
+        stocks_etf_us: [],
+        stocks_etf_europe: [],
+        stocks_etf_asia: [],
+        stocks_etf: []
+    };
+    const addTo = (key, type, amount) => {
+        if (!out[key]) return;
+        out[key].push({ type, amount });
+        if (key !== 'stocks_companies') {
+            out.stocks_etf.push({ type, amount });
+        }
+    };
+    transfers.forEach(t => {
+        if (t.type === 'deposit' && t.category === 'stocks') {
+            const key = stockSubKeyFor(t.name);
+            if (key) addTo(key, 'deposit', t.amount);
+        } else if (t.type === 'withdraw' && t.category === 'stocks') {
+            const key = stockSubKeyFor(t.name);
+            if (key) addTo(key, 'withdraw', t.amount);
+        } else if (t.type === 'move') {
+            if (t.from_category === 'stocks') {
+                const key = stockSubKeyFor(t.from_name);
+                if (key) addTo(key, 'withdraw', t.amount);
+            }
+            if (t.to_category === 'stocks') {
+                const key = stockSubKeyFor(t.to_name);
+                if (key) addTo(key, 'deposit', t.amount);
+            }
+        }
+    });
+    return out;
+}
+
 // Helper: compound a list of monthly yields into cumulative series (null breaks compounding)
 function compoundSeries(monthlyYields) {
     const result = [];
@@ -617,6 +670,44 @@ function compoundSeries(monthlyYields) {
         }
     }
     return result;
+}
+
+// Sample standard deviation of a numeric array
+function stdDev(arr) {
+    if (!arr || arr.length < 2) return null;
+    const n = arr.length;
+    const mean = arr.reduce((s, v) => s + v, 0) / n;
+    const variance = arr.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1);
+    return Math.sqrt(variance);
+}
+
+// Compute YTD / annualised vol / Sharpe-style ratio for a bucket from
+// the stored monthly yields and compounded series.
+// Risk-free rate: 3.5% annual (matches the Deposit benchmark used elsewhere).
+function bucketStats(monthlyYields, compoundedSeries) {
+    if (!monthlyYields || monthlyYields.length === 0) {
+        return { ytd: 0, vol: null, sharpe: null, monthsTracked: 0 };
+    }
+    // Skip Jan zero-km baseline (idx=0) and any nulls.
+    const real = monthlyYields.slice(1).filter(y => y !== null && y !== undefined && isFinite(y));
+    const ytd = (compoundedSeries && compoundedSeries.length)
+        ? (compoundedSeries[compoundedSeries.length - 1] ?? 0) : 0;
+    const monthsPassed = monthlyYields.length;
+
+    let vol = null;
+    let sharpe = null;
+    if (real.length >= 2) {
+        const std = stdDev(real);
+        if (std !== null && isFinite(std)) {
+            vol = std * Math.sqrt(12);
+            if (vol > 0.0005 && monthsPassed >= 2 && (1 + ytd) > 0) {
+                const annualisedReturn = Math.pow(1 + ytd, 12 / monthsPassed) - 1;
+                sharpe = (annualisedReturn - 0.035) / vol;
+            }
+        }
+    }
+
+    return { ytd, vol, sharpe, monthsTracked: real.length };
 }
 
 // 5. Orchestrator
@@ -643,6 +734,12 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     const monthLabels = [];
     const categoryYields = {}; // catId -> [monthly yields]
     const benchmarkYields = { vt: [], voo: [], deposit: [] };
+    // Stocks sub-buckets: companies / ETF regions / ETF total
+    const SUB_STOCK_KEYS = ['stocks_companies', 'stocks_etf_us', 'stocks_etf_europe', 'stocks_etf_asia', 'stocks_etf'];
+    const subStocksYields = {};
+    SUB_STOCK_KEYS.forEach(k => { subStocksYields[k] = []; });
+    let prevSubStocksBalances = {};
+    SUB_STOCK_KEYS.forEach(k => { prevSubStocksBalances[k] = 0; });
     let prevCategoryBalances = {};
 
     // Collect ALL transfer groups across all months for date-based filtering
@@ -661,6 +758,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             yields.push(0);
             netFlows.push(0);
             Object.keys(categoryYields).forEach(catId => categoryYields[catId].push(0));
+            SUB_STOCK_KEYS.forEach(k => subStocksYields[k].push(0));
             benchmarkYields.vt.push(null);
             benchmarkYields.voo.push(null);
             benchmarkYields.deposit.push(0);
@@ -695,6 +793,25 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             currCategoryBalances[cat.id] = cat.items.reduce((s, it) => s + it.val, 0);
         });
 
+        // Build current stocks sub-bucket balances (companies / ETF regions / ETF total)
+        const currSubStocksBalances = {
+            stocks_companies: 0,
+            stocks_etf_us: 0,
+            stocks_etf_europe: 0,
+            stocks_etf_asia: 0
+        };
+        const stocksCat = item.data.portfolio.find(c => c.id === 'stocks');
+        if (stocksCat) {
+            stocksCat.items.forEach(it => {
+                const subKey = stockSubKeyFor(it.name);
+                if (subKey) currSubStocksBalances[subKey] += it.val;
+            });
+        }
+        currSubStocksBalances.stocks_etf =
+            currSubStocksBalances.stocks_etf_us +
+            currSubStocksBalances.stocks_etf_europe +
+            currSubStocksBalances.stocks_etf_asia;
+
         // Ensure all seen categories have a series (zero-fill past months)
         const allCatIds = new Set([
             ...Object.keys(prevCategoryBalances),
@@ -716,6 +833,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             profitVal = 0;
             accumulatedNetFlow += endBalance;
             allCatIds.forEach(catId => categoryYields[catId].push(0));
+            SUB_STOCK_KEYS.forEach(k => subStocksYields[k].push(0));
         } else {
             yieldVal = calculateSimpleYield(startBalance, endBalance, monthTransfers);
             profitVal = endBalance - (startBalance + mNetFlow);
@@ -737,6 +855,24 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
                     return;
                 }
                 categoryYields[catId].push(calculateSimpleYield(catStart, catEnd, catTransfers));
+            });
+
+            // Per stocks sub-bucket yields (companies / ETF regions / ETF total)
+            const subTransfersByKey = buildStockSubTransfersAll(monthTransfers);
+            SUB_STOCK_KEYS.forEach(subKey => {
+                const subStart = prevSubStocksBalances[subKey] || 0;
+                const subEnd = currSubStocksBalances[subKey] || 0;
+                if (subStart === 0 && subEnd === 0) {
+                    subStocksYields[subKey].push(0);
+                    return;
+                }
+                const subTrans = subTransfersByKey[subKey] || [];
+                const subDeposits = subTrans.reduce((s, t) => s + (t.type === 'deposit' ? t.amount : 0), 0);
+                if (subStart === 0 && subDeposits === 0 && subEnd > 0) {
+                    subStocksYields[subKey].push(0);
+                    return;
+                }
+                subStocksYields[subKey].push(calculateSimpleYield(subStart, subEnd, subTrans));
             });
         }
 
@@ -779,6 +915,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         prevSnapshotDate = currentSnapshotDate;
         prevBalance = endBalance;
         prevCategoryBalances = currCategoryBalances;
+        prevSubStocksBalances = currSubStocksBalances;
     }
 
     // YTD is compounded yield of ALL months up to current
@@ -840,6 +977,33 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         voo: compoundSeries(benchmarkYields.voo),
         deposit: compoundSeries(benchmarkYields.deposit)
     };
+    const subStocksSeries = {};
+    SUB_STOCK_KEYS.forEach(k => {
+        subStocksSeries[k] = compoundSeries(subStocksYields[k]);
+    });
+
+    // --- Performance comparison table data ---
+    const performanceTable = {
+        companies:    bucketStats(subStocksYields.stocks_companies,   subStocksSeries.stocks_companies),
+        etf_total:    bucketStats(subStocksYields.stocks_etf,         subStocksSeries.stocks_etf),
+        etf_us:       bucketStats(subStocksYields.stocks_etf_us,      subStocksSeries.stocks_etf_us),
+        etf_eu:       bucketStats(subStocksYields.stocks_etf_europe,  subStocksSeries.stocks_etf_europe),
+        etf_asia:     bucketStats(subStocksYields.stocks_etf_asia,    subStocksSeries.stocks_etf_asia),
+        stocks_total: bucketStats(categoryYields.stocks || [],        categorySeries.stocks || []),
+        vt:           bucketStats(benchmarkYields.vt,                 benchmarkSeries.vt),
+        voo:          bucketStats(benchmarkYields.voo,                benchmarkSeries.voo)
+    };
+
+    // Allocation within stocks (last-month balances)
+    const lastStocksTotal = (prevCategoryBalances?.stocks) || 0;
+    const allocations = lastStocksTotal > 0 ? {
+        companies:    (prevSubStocksBalances.stocks_companies   || 0) / lastStocksTotal,
+        etf_total:    (prevSubStocksBalances.stocks_etf         || 0) / lastStocksTotal,
+        etf_us:       (prevSubStocksBalances.stocks_etf_us      || 0) / lastStocksTotal,
+        etf_eu:       (prevSubStocksBalances.stocks_etf_europe  || 0) / lastStocksTotal,
+        etf_asia:     (prevSubStocksBalances.stocks_etf_asia    || 0) / lastStocksTotal,
+        stocks_total: 1
+    } : null;
 
     // --- Benchmark calculations (monthly period) ---
     let benchmarks = null;
@@ -894,6 +1058,10 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         totalSeries: totalSeries,
         categorySeries: categorySeries,
         benchmarkSeries: benchmarkSeries,
+        subStocksSeries: subStocksSeries,
+        // Stocks comparison table data
+        performanceTable: performanceTable,
+        allocations: allocations,
         // Projection (used by forecast tiles, not by chart)
         projection: projection
     };
@@ -1514,11 +1682,19 @@ async function loadMonth(monthId) {
             const benchmarksData = await fetchBenchmarks();
             const forecastStats = await calculateYearStats(monthId, benchmarksData);
             updateForecastUI(forecastStats);
-            renderPerformanceChart(forecastStats);
+            lastPerfStats = forecastStats;
+            // Render the currently active view; the inactive one re-renders on toggle
+            if (perfViewMode === 'table') {
+                renderPerformanceTable(forecastStats);
+            } else {
+                renderPerformanceChart(forecastStats);
+            }
         } catch (err) {
             console.error('Forecasting error:', err);
             updateForecastUI(null);
+            lastPerfStats = null;
             renderPerformanceChart(null);
+            renderPerformanceTable(null);
         }
         // -----------------------
 
@@ -2100,6 +2276,17 @@ function renderPerformanceChart(stats) {
     // Default-hidden categories (low-volatility noise)
     const DEFAULT_HIDDEN_CATS = new Set(['usd', 'safe']);
 
+    // Stocks sub-buckets share the purple family of the parent stocks category but
+    // step through shades from dark → light so they can be visually compared.
+    // All hidden by default; the overall Stocks line stays default-on.
+    const SUB_STOCK_DATASETS = [
+        { key: 'stocks_companies',  label: 'Stocks (companies)', color: '#4c1d95' },
+        { key: 'stocks_etf',        label: 'ETF (total)',        color: '#6d28d9' },
+        { key: 'stocks_etf_us',     label: 'ETF USA',            color: '#8b5cf6' },
+        { key: 'stocks_etf_europe', label: 'ETF Europe',         color: '#a78bfa' },
+        { key: 'stocks_etf_asia',   label: 'ETF Asia',           color: '#c4b5fd' }
+    ];
+
     catIds.forEach(catId => {
         const meta = globalCategories[catId];
         const label = meta ? meta.title : catId;
@@ -2115,6 +2302,28 @@ function renderPerformanceChart(stats) {
             spanGaps: true,
             hidden: DEFAULT_HIDDEN_CATS.has(catId)
         });
+
+        // Right after the Stocks category line, insert all stocks sub-buckets so
+        // they appear contiguous in the legend.
+        if (catId === 'stocks' && stats.subStocksSeries) {
+            SUB_STOCK_DATASETS.forEach(def => {
+                const series = stats.subStocksSeries[def.key];
+                if (!series) return;
+                const hasAny = series.some(v => v !== null && v !== undefined && v !== 0);
+                if (!hasAny) return;
+                datasets.push({
+                    label: def.label,
+                    data: series.map(v => v === null ? null : v * 100),
+                    borderColor: def.color,
+                    backgroundColor: def.color,
+                    borderWidth: 1.6,
+                    pointRadius: 2,
+                    tension: 0.25,
+                    spanGaps: true,
+                    hidden: true // off by default; user enables via legend
+                });
+            });
+        }
     });
 
     // Total portfolio (black, thick)
@@ -2210,6 +2419,199 @@ function renderPerformanceChart(stats) {
             }
         }
     });
+}
+
+// ===========================================
+// RENDER PERFORMANCE TABLE (Stocks comparison)
+// ===========================================
+function renderPerformanceTable(stats) {
+    const table = document.getElementById('performanceTable');
+    if (!table) return;
+    if (!stats || !stats.performanceTable) {
+        table.innerHTML = '';
+        return;
+    }
+
+    const data = stats.performanceTable;
+    const allocs = stats.allocations;
+
+    // Pick benchmark for α
+    const benchKey = alphaBenchmark === 'VOO' ? 'voo' : 'vt';
+    const benchYTD = data[benchKey]?.ytd ?? null;
+
+    // Build a structured row: { id, label, alloc, ytd, vol, sharpe, alpha }
+    const buildRow = (id, label) => {
+        const d = data[id] || {};
+        const alloc = allocs && allocs[id] != null ? allocs[id] : null;
+        const ytd = d.ytd != null ? d.ytd : null;
+        const vol = d.vol;
+        const sharpe = d.sharpe;
+        // No α for the active benchmark itself (compared to itself = 0).
+        let alpha = null;
+        if (id !== benchKey && ytd != null && benchYTD != null) {
+            alpha = ytd - benchYTD;
+        }
+        return { id, label, alloc, ytd, vol, sharpe, alpha };
+    };
+
+    const subRows = [
+        buildRow('companies', 'Companies'),
+        buildRow('etf_total', 'ETF total'),
+        buildRow('etf_us',    'ETF USA'),
+        buildRow('etf_eu',    'ETF Europe'),
+        buildRow('etf_asia',  'ETF Asia')
+    ];
+    const stocksRow = buildRow('stocks_total', 'Stocks');
+    const benchmarkRows = [
+        buildRow('vt',  'VT (Market)'),
+        buildRow('voo', 'VOO (S&P 500)')
+    ];
+
+    // Sort sub-rows if a sort is active (nulls to bottom)
+    let sortedSub = subRows.slice();
+    if (tableSortKey) {
+        sortedSub.sort((a, b) => {
+            const va = a[tableSortKey];
+            const vb = b[tableSortKey];
+            if (va == null && vb == null) return 0;
+            if (va == null) return 1;
+            if (vb == null) return -1;
+            return tableSortDir === 'desc' ? vb - va : va - vb;
+        });
+    }
+
+    // Formatters
+    const fmtPct = (v, signed = false) => {
+        if (v == null || !isFinite(v)) return '—';
+        const sign = signed ? (v >= 0 ? '+' : '') : '';
+        return `${sign}${(v * 100).toFixed(1)}%`;
+    };
+    const fmtAlloc = (v) => {
+        if (v == null || !isFinite(v)) return '—';
+        return `${(v * 100).toFixed(0)}%`;
+    };
+    const fmtSharpe = (v) => {
+        if (v == null || !isFinite(v)) return '—';
+        return v.toFixed(2);
+    };
+    // Single green / red across all numeric cells (project-wide convention).
+    const cls = (v) => {
+        if (v == null || !isFinite(v)) return '';
+        if (v > 0.0005) return 'perf-positive';
+        if (v < -0.0005) return 'perf-negative';
+        return '';
+    };
+    // Sharpe uses a slightly larger neutral band — values very close to 0 are
+    // not meaningful signals.
+    const sharpeColorVal = (v) => {
+        if (v == null || !isFinite(v)) return null;
+        if (v > 0.05) return 1;
+        if (v < -0.05) return -1;
+        return 0;
+    };
+
+    const cellsForRow = (r) => `
+        <td title="${escapeAttr(r.label)}">${r.label}</td>
+        <td>${fmtAlloc(r.alloc)}</td>
+        <td class="${cls(r.ytd)}">${fmtPct(r.ytd, true)}</td>
+        <td>${fmtPct(r.vol)}</td>
+        <td class="${cls(r.alpha)}">${fmtPct(r.alpha, true)}</td>
+        <td class="${cls(sharpeColorVal(r.sharpe))}">${fmtSharpe(r.sharpe)}</td>
+    `;
+
+    // Headers — α is special: not sortable, tap toggles benchmark VOO ↔ VT.
+    const headers = [
+        { key: null,     label: 'Bucket',                     tip: '' },
+        { key: 'alloc',  label: '%',                          tip: 'Доля внутри Stocks (на конец месяца)' },
+        { key: 'ytd',    label: 'YTD',                        tip: 'Накопленная доходность с начала года' },
+        { key: 'vol',    label: 'σ',                          tip: 'Annualised volatility (std dev × √12) — амплитуда колебаний' },
+        { toggleBench: true, label: `α (${alphaBenchmark})`,  tip: 'Alpha vs выбранный бенчмарк. Тап — переключение VOO ↔ VT.' },
+        { key: 'sharpe', label: 'S',                          tip: 'Sharpe-стиль: (annualised return − 3.5%) / annualised σ — доходность за единицу риска' }
+    ];
+
+    const headerHtml = headers.map(h => {
+        const titleAttr = h.tip ? `title="${escapeAttr(h.tip)}"` : '';
+        if (h.toggleBench) {
+            return `<th data-toggle-bench="true" ${titleAttr}>${h.label}</th>`;
+        }
+        const sortable = h.key !== null;
+        const isActive = h.key === tableSortKey;
+        const sortClass = isActive ? (tableSortDir === 'desc' ? 'sort-active desc' : 'sort-active') : '';
+        const sortAttr = sortable ? `data-sort-key="${h.key}"` : '';
+        return `<th class="${sortClass}" ${sortAttr} ${titleAttr}>${h.label}</th>`;
+    }).join('');
+
+    const subHtml = sortedSub.map(r => `<tr>${cellsForRow(r)}</tr>`).join('');
+    const stocksHtml = `<tr class="row-stocks-total">${cellsForRow(stocksRow)}</tr>`;
+    const benchHtml = benchmarkRows.map((r, i) =>
+        `<tr class="row-benchmark${i === 0 ? ' first' : ''}">${cellsForRow(r)}</tr>`
+    ).join('');
+
+    table.innerHTML = `
+        <thead><tr>${headerHtml}</tr></thead>
+        <tbody>
+            ${subHtml}
+            ${stocksHtml}
+            ${benchHtml}
+        </tbody>
+    `;
+
+    // Wire sort handlers
+    table.querySelectorAll('th[data-sort-key]').forEach(th => {
+        th.addEventListener('click', () => {
+            const key = th.getAttribute('data-sort-key');
+            if (tableSortKey === key) {
+                // Cycle: desc → asc → off
+                if (tableSortDir === 'desc') tableSortDir = 'asc';
+                else { tableSortKey = null; tableSortDir = 'desc'; }
+            } else {
+                tableSortKey = key;
+                tableSortDir = 'desc';
+            }
+            renderPerformanceTable(stats);
+        });
+    });
+
+    // Wire α benchmark toggle (VOO ↔ VT)
+    table.querySelectorAll('th[data-toggle-bench]').forEach(th => {
+        th.addEventListener('click', () => {
+            alphaBenchmark = alphaBenchmark === 'VOO' ? 'VT' : 'VOO';
+            renderPerformanceTable(stats);
+        });
+    });
+}
+
+function escapeAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// ===========================================
+// PERFORMANCE VIEW TOGGLE (Chart / Table) + α benchmark toggle
+// ===========================================
+function setupPerfViewToggle() {
+    const toggle = document.getElementById('perfViewToggle');
+    const chartView = document.getElementById('perf-view-chart');
+    const tableView = document.getElementById('perf-view-table');
+
+    if (toggle && chartView && tableView) {
+        toggle.addEventListener('click', (e) => {
+            const opt = e.target.closest('.chart-toggle-option');
+            if (!opt || opt.classList.contains('active')) return;
+            toggle.querySelectorAll('.chart-toggle-option').forEach(o => o.classList.remove('active'));
+            opt.classList.add('active');
+            perfViewMode = opt.getAttribute('data-view');
+            if (perfViewMode === 'chart') {
+                chartView.style.display = '';
+                tableView.style.display = 'none';
+                if (lastPerfStats) renderPerformanceChart(lastPerfStats);
+            } else {
+                chartView.style.display = 'none';
+                tableView.style.display = '';
+                if (lastPerfStats) renderPerformanceTable(lastPerfStats);
+            }
+        });
+    }
+
 }
 
 // ===========================================
@@ -2747,6 +3149,7 @@ async function init() {
     // 2. Setup tab handlers
     setupTabHandlers();
     setupChartToggle();
+    setupPerfViewToggle();
     setupSwipeNavigation();
     setupMonthArrows();
     setupPerfChartTooltipDismiss();
