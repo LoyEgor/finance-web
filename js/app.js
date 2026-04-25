@@ -21,9 +21,11 @@ let performanceChart = null;
 let chartMode = 'category'; // 'category' or 'source'
 let perfViewMode = 'chart'; // 'chart' or 'table'
 let alphaBenchmark = 'VOO'; // 'VOO' or 'VT' — α reference for the table
-let tableSortKey = null;    // null | 'alloc' | 'ytd' | 'vol' | 'alpha' | 'sharpe'
+let tableSortKey = null;    // null | 'ytd' | 'vol' | 'alpha' | 'sharpe'
 let tableSortDir = 'desc';
 let lastPerfStats = null;
+// Set of bucket ids visible in the table. Stocks-related on by default.
+let enabledTableBuckets = null;
 let currentMonthId = null;
 let availableMonths = [];
 let currentPortfolioData = null;
@@ -993,6 +995,13 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         vt:           bucketStats(benchmarkYields.vt,                 benchmarkSeries.vt),
         voo:          bucketStats(benchmarkYields.voo,                benchmarkSeries.voo)
     };
+    // Other categories (Safe, Cash/USD, Crypto, Copytrading) — for the toggleable
+    // "compare-with-anything" rows in the table.
+    ['safe', 'usd', 'crypto', 'copy'].forEach(catId => {
+        if (categoryYields[catId]) {
+            performanceTable[catId] = bucketStats(categoryYields[catId], categorySeries[catId]);
+        }
+    });
 
     // Allocation within stocks (last-month balances)
     const lastStocksTotal = (prevCategoryBalances?.stocks) || 0;
@@ -1906,7 +1915,7 @@ function renderPortfolio(data, comparison = null) {
                 { key: 'etf_us', label: 'ETF \u2013 USA' },
                 { key: 'etf_europe', label: 'ETF \u2013 Europe' },
                 { key: 'etf_asia', label: 'ETF \u2013 Asia' },
-                { key: 'companies', label: 'Stocks' }
+                { key: 'companies', label: 'Companies' }
             ];
             const buckets = { etf_us: [], etf_europe: [], etf_asia: [], companies: [] };
             cat.items.forEach(item => {
@@ -2031,6 +2040,11 @@ function renderChart() {
     const chartValues = [];
     const chartColors = [];
     const chartDeltas = []; // MOM delta percentages
+    // Parallel to chartLabels but holds the *true* segment name (e.g. "Companies"
+    // for the companies sub-bucket, instead of the parent category title that
+    // chartLabels uses to keep the legend numbered). Read by the tooltip title
+    // callback so hovering shows the actual segment identity.
+    const chartSegmentNames = [];
     const chartBorderColors = [];
     const chartBorderWidths = [];
 
@@ -2060,6 +2074,7 @@ function renderChart() {
         const defaultColors = ['#6366f1', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#64748b'];
         sorted.forEach(([src, data], i) => {
             chartLabels.push(src);
+            chartSegmentNames.push(src);
             chartValues.push(data.total);
             chartColors.push(SOURCE_COLORS[src] || defaultColors[i % defaultColors.length]);
 
@@ -2081,7 +2096,7 @@ function renderChart() {
             if (cat.id === 'stocks') {
                 // Partition into subgroups for chart
                 const sgDefs = [
-                    { key: 'companies', label: 'Stocks' },
+                    { key: 'companies', label: 'Companies' },
                     { key: 'etf_us', label: 'ETF - USA' },
                     { key: 'etf_europe', label: 'ETF - Europe' },
                     { key: 'etf_asia', label: 'ETF - Asia' }
@@ -2092,11 +2107,17 @@ function renderChart() {
                     const sg = classifyStockItem(item.name);
                     sgBuckets[sg] += item.val;
                 });
-                // First subgroup gets the category title for legend, rest are hidden
+                // The donut legend below mirrors the accordion's numbered titles
+                // ("1. Safe", "2. Stocks", "3. Cash", ...). The first non-empty
+                // stocks sub-bucket therefore gets the parent category title;
+                // the rest get their region/companies labels and are hidden from
+                // the legend by the filter callback (anything starting with
+                // "ETF - " or named "Companies" is suppressed).
                 let firstSg = true;
                 sgDefs.forEach(sg => {
                     if (sgBuckets[sg.key] <= 0) return;
                     chartLabels.push(firstSg ? cat.title : sg.label);
+                    chartSegmentNames.push(sg.label);
                     if (firstSg) firstSg = false;
                     chartValues.push(sgBuckets[sg.key]);
                     chartColors.push(cat.color);
@@ -2106,6 +2127,7 @@ function renderChart() {
                 });
             } else {
                 chartLabels.push(cat.title);
+                chartSegmentNames.push(cat.title);
                 chartValues.push(cat.total);
                 chartColors.push(cat.color);
                 chartBorderColors.push('transparent');
@@ -2172,7 +2194,11 @@ function renderChart() {
                         padding: 15,
                         font: { size: 11 },
                         filter: function (item) {
-                            return !item.text.startsWith('ETF - ');
+                            // Hide stocks sub-bucket labels; only the parent
+                            // category title (e.g. "2. Stocks") shows in legend.
+                            if (item.text.startsWith('ETF - ')) return false;
+                            if (item.text === 'Companies') return false;
+                            return true;
                         }
                     },
                     // Legend click toggling is disabled — visual feedback (strikethrough)
@@ -2184,6 +2210,15 @@ function renderChart() {
                     footerColor: '#9ca3af',
                     footerFont: { size: 11, weight: 'normal' },
                     callbacks: {
+                        // Override the tooltip title so each segment shows its
+                        // *true* name on hover (e.g. "Companies"), even though
+                        // the legend below uses the parent category title for
+                        // the first stocks sub-bucket ("2. Stocks") to keep
+                        // the numbered list consistent with the accordion.
+                        title: function (items) {
+                            if (!items.length) return '';
+                            return chartSegmentNames[items[0].dataIndex] || items[0].label;
+                        },
                         label: function (context) {
                             const val = context.raw;
                             const pct = ((val / grandTotal) * 100).toFixed(2) + '%';
@@ -2280,11 +2315,11 @@ function renderPerformanceChart(stats) {
     // step through shades from dark → light so they can be visually compared.
     // All hidden by default; the overall Stocks line stays default-on.
     const SUB_STOCK_DATASETS = [
-        { key: 'stocks_companies',  label: 'Stocks (companies)', color: '#4c1d95' },
-        { key: 'stocks_etf',        label: 'ETF (total)',        color: '#6d28d9' },
-        { key: 'stocks_etf_us',     label: 'ETF USA',            color: '#8b5cf6' },
-        { key: 'stocks_etf_europe', label: 'ETF Europe',         color: '#a78bfa' },
-        { key: 'stocks_etf_asia',   label: 'ETF Asia',           color: '#c4b5fd' }
+        { key: 'stocks_companies',  label: 'Companies',  color: '#4c1d95' },
+        { key: 'stocks_etf',        label: 'ETF total',  color: '#6d28d9' },
+        { key: 'stocks_etf_us',     label: 'ETF USA',    color: '#8b5cf6' },
+        { key: 'stocks_etf_europe', label: 'ETF Europe', color: '#a78bfa' },
+        { key: 'stocks_etf_asia',   label: 'ETF Asia',   color: '#c4b5fd' }
     ];
 
     catIds.forEach(catId => {
@@ -2424,53 +2459,91 @@ function renderPerformanceChart(stats) {
 // ===========================================
 // RENDER PERFORMANCE TABLE (Stocks comparison)
 // ===========================================
+// All possible bucket rows. Order here defines the unsorted (default) row order
+// and the legend pill order.
+function getAllPerfRows() {
+    const labelFor = (catId, fallback) => {
+        const t = globalCategories[catId]?.title;
+        return t ? t.replace(/^\d+\.\s*/, '') : fallback;
+    };
+    return [
+        { id: 'companies',    label: 'Companies',     dot: '#4c1d95' },
+        { id: 'etf_total',    label: 'ETF total',     dot: '#6d28d9' },
+        { id: 'etf_us',       label: 'ETF USA',       dot: '#8b5cf6' },
+        { id: 'etf_eu',       label: 'ETF Europe',    dot: '#a78bfa' },
+        { id: 'etf_asia',     label: 'ETF Asia',      dot: '#c4b5fd' },
+        { id: 'stocks_total', label: 'Stocks',        dot: globalCategories.stocks?.color || '#9f7aea' },
+        { id: 'safe',         label: labelFor('safe',   'Safe'),        dot: globalCategories.safe?.color   || '#ecc94b', isCategory: true },
+        { id: 'usd',          label: labelFor('usd',    'Cash'),        dot: globalCategories.usd?.color    || '#48bb78', isCategory: true },
+        { id: 'crypto',       label: labelFor('crypto', 'Crypto'),      dot: globalCategories.crypto?.color || '#ed8936', isCategory: true },
+        { id: 'copy',         label: labelFor('copy',   'Copytrading'), dot: globalCategories.copy?.color   || '#4299e1', isCategory: true },
+        { id: 'vt',           label: 'VT (Market)',   dot: '#718096', isBenchmark: true },
+        { id: 'voo',          label: 'VOO (S&P 500)', dot: '#a0aec0', isBenchmark: true }
+    ];
+}
+
+function defaultEnabledTableBuckets() {
+    // Stocks-related + the two market benchmarks (VT, VOO) ON by default;
+    // other categories (Safe / Cash / Crypto / Copytrading) OFF.
+    return new Set(['companies', 'etf_total', 'etf_us', 'etf_eu', 'etf_asia', 'stocks_total', 'vt', 'voo']);
+}
+
 function renderPerformanceTable(stats) {
     const table = document.getElementById('performanceTable');
+    const legendEl = document.getElementById('perfTableLegend');
     if (!table) return;
     if (!stats || !stats.performanceTable) {
         table.innerHTML = '';
+        if (legendEl) legendEl.innerHTML = '';
         return;
     }
 
+    if (!enabledTableBuckets) enabledTableBuckets = defaultEnabledTableBuckets();
+
     const data = stats.performanceTable;
-    const allocs = stats.allocations;
+    const ALL = getAllPerfRows();
 
     // Pick benchmark for α
     const benchKey = alphaBenchmark === 'VOO' ? 'voo' : 'vt';
     const benchYTD = data[benchKey]?.ytd ?? null;
 
-    // Build a structured row: { id, label, alloc, ytd, vol, sharpe, alpha }
-    const buildRow = (id, label) => {
-        const d = data[id] || {};
-        const alloc = allocs && allocs[id] != null ? allocs[id] : null;
+    const buildRow = (def) => {
+        const d = data[def.id] || {};
         const ytd = d.ytd != null ? d.ytd : null;
         const vol = d.vol;
         const sharpe = d.sharpe;
-        // No α for the active benchmark itself (compared to itself = 0).
         let alpha = null;
-        if (id !== benchKey && ytd != null && benchYTD != null) {
+        if (def.id !== benchKey && ytd != null && benchYTD != null) {
             alpha = ytd - benchYTD;
         }
-        return { id, label, alloc, ytd, vol, sharpe, alpha };
+        return {
+            id: def.id, label: def.label,
+            isBenchmark: !!def.isBenchmark,
+            ytd, vol, sharpe, alpha
+        };
     };
 
-    const subRows = [
-        buildRow('companies', 'Companies'),
-        buildRow('etf_total', 'ETF total'),
-        buildRow('etf_us',    'ETF USA'),
-        buildRow('etf_eu',    'ETF Europe'),
-        buildRow('etf_asia',  'ETF Asia')
-    ];
-    const stocksRow = buildRow('stocks_total', 'Stocks');
-    const benchmarkRows = [
-        buildRow('vt',  'VT (Market)'),
-        buildRow('voo', 'VOO (S&P 500)')
-    ];
+    // --- Legend pills (all rows, active = visible in table) ---
+    if (legendEl) {
+        legendEl.innerHTML = ALL.map(def => {
+            const active = enabledTableBuckets.has(def.id);
+            const dot = def.dot ? `<span class="legend-dot" style="background:${def.dot}"></span>` : '';
+            return `<button type="button" class="perf-table-legend-pill${active ? ' active' : ''}" data-bucket-id="${def.id}">${dot}${escapeAttr(def.label)}</button>`;
+        }).join('');
+        legendEl.querySelectorAll('.perf-table-legend-pill').forEach(el => {
+            el.addEventListener('click', () => {
+                const id = el.getAttribute('data-bucket-id');
+                if (enabledTableBuckets.has(id)) enabledTableBuckets.delete(id);
+                else enabledTableBuckets.add(id);
+                renderPerformanceTable(stats);
+            });
+        });
+    }
 
-    // Sort sub-rows if a sort is active (nulls to bottom)
-    let sortedSub = subRows.slice();
+    // --- Rows: filter by enabled, sort if active ---
+    let rows = ALL.filter(def => enabledTableBuckets.has(def.id)).map(buildRow);
     if (tableSortKey) {
-        sortedSub.sort((a, b) => {
+        rows.sort((a, b) => {
             const va = a[tableSortKey];
             const vb = b[tableSortKey];
             if (va == null && vb == null) return 0;
@@ -2480,29 +2553,20 @@ function renderPerformanceTable(stats) {
         });
     }
 
-    // Formatters
+    // --- Formatters / colour classes ---
     const fmtPct = (v, signed = false) => {
         if (v == null || !isFinite(v)) return '—';
         const sign = signed ? (v >= 0 ? '+' : '') : '';
         return `${sign}${(v * 100).toFixed(1)}%`;
     };
-    const fmtAlloc = (v) => {
-        if (v == null || !isFinite(v)) return '—';
-        return `${(v * 100).toFixed(0)}%`;
-    };
-    const fmtSharpe = (v) => {
-        if (v == null || !isFinite(v)) return '—';
-        return v.toFixed(2);
-    };
-    // Single green / red across all numeric cells (project-wide convention).
+    const fmtSharpe = (v) => (v == null || !isFinite(v)) ? '—' : v.toFixed(2);
     const cls = (v) => {
         if (v == null || !isFinite(v)) return '';
         if (v > 0.0005) return 'perf-positive';
         if (v < -0.0005) return 'perf-negative';
         return '';
     };
-    // Sharpe uses a slightly larger neutral band — values very close to 0 are
-    // not meaningful signals.
+    // Sharpe uses a wider neutral band — tiny values aren't meaningful.
     const sharpeColorVal = (v) => {
         if (v == null || !isFinite(v)) return null;
         if (v > 0.05) return 1;
@@ -2512,21 +2576,19 @@ function renderPerformanceTable(stats) {
 
     const cellsForRow = (r) => `
         <td title="${escapeAttr(r.label)}">${r.label}</td>
-        <td>${fmtAlloc(r.alloc)}</td>
         <td class="${cls(r.ytd)}">${fmtPct(r.ytd, true)}</td>
         <td>${fmtPct(r.vol)}</td>
         <td class="${cls(r.alpha)}">${fmtPct(r.alpha, true)}</td>
         <td class="${cls(sharpeColorVal(r.sharpe))}">${fmtSharpe(r.sharpe)}</td>
     `;
 
-    // Headers — α is special: not sortable, tap toggles benchmark VOO ↔ VT.
+    // --- Headers ---
     const headers = [
-        { key: null,     label: 'Bucket',                     tip: '' },
-        { key: 'alloc',  label: '%',                          tip: 'Доля внутри Stocks (на конец месяца)' },
-        { key: 'ytd',    label: 'YTD',                        tip: 'Накопленная доходность с начала года' },
-        { key: 'vol',    label: 'σ',                          tip: 'Annualised volatility (std dev × √12) — амплитуда колебаний' },
-        { toggleBench: true, label: `α (${alphaBenchmark})`,  tip: 'Alpha vs выбранный бенчмарк. Тап — переключение VOO ↔ VT.' },
-        { key: 'sharpe', label: 'S',                          tip: 'Sharpe-стиль: (annualised return − 3.5%) / annualised σ — доходность за единицу риска' }
+        { key: null,     label: 'Bucket',                          tip: '' },
+        { key: 'ytd',    label: 'YTD',                             tip: 'Накопленная доходность с начала года' },
+        { key: 'vol',    label: 'σ',                               tip: 'Annualised volatility (std dev × √12) — амплитуда колебаний' },
+        { toggleBench: true, label: `α vs ${alphaBenchmark}`,      tip: 'Alpha vs выбранный бенчмарк. Тап — переключение VOO ↔ VT.' },
+        { key: 'sharpe', label: 'S',                               tip: 'Sharpe-стиль: (annualised return − 3.5%) / annualised σ — доходность за единицу риска' }
     ];
 
     const headerHtml = headers.map(h => {
@@ -2541,19 +2603,14 @@ function renderPerformanceTable(stats) {
         return `<th class="${sortClass}" ${sortAttr} ${titleAttr}>${h.label}</th>`;
     }).join('');
 
-    const subHtml = sortedSub.map(r => `<tr>${cellsForRow(r)}</tr>`).join('');
-    const stocksHtml = `<tr class="row-stocks-total">${cellsForRow(stocksRow)}</tr>`;
-    const benchHtml = benchmarkRows.map((r, i) =>
-        `<tr class="row-benchmark${i === 0 ? ' first' : ''}">${cellsForRow(r)}</tr>`
-    ).join('');
+    const bodyHtml = rows.map(r => {
+        const cls = r.isBenchmark ? 'row-benchmark' : '';
+        return `<tr class="${cls}">${cellsForRow(r)}</tr>`;
+    }).join('');
 
     table.innerHTML = `
         <thead><tr>${headerHtml}</tr></thead>
-        <tbody>
-            ${subHtml}
-            ${stocksHtml}
-            ${benchHtml}
-        </tbody>
+        <tbody>${bodyHtml}</tbody>
     `;
 
     // Wire sort handlers
@@ -2561,7 +2618,6 @@ function renderPerformanceTable(stats) {
         th.addEventListener('click', () => {
             const key = th.getAttribute('data-sort-key');
             if (tableSortKey === key) {
-                // Cycle: desc → asc → off
                 if (tableSortDir === 'desc') tableSortDir = 'asc';
                 else { tableSortKey = null; tableSortDir = 'desc'; }
             } else {

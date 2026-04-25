@@ -955,19 +955,61 @@ tr:last-child td {
     text-overflow: ellipsis;
 }
 
-.performance-table tr.row-stocks-total td {
-    background: #f7fafc;
-    font-weight: 600;
-    border-top: 1px solid #e2e8f0;
-}
-
 .performance-table tr.row-benchmark td {
     color: #718096;
     font-style: italic;
 }
 
-.performance-table tr.row-benchmark.first td {
-    border-top: 1px solid #e2e8f0;
+/* ===========================================
+   Performance Table Legend (pills)
+   =========================================== */
+.perf-table-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 0 6px 12px 6px;
+    justify-content: center;
+}
+
+.perf-table-legend-pill {
+    background: white;
+    color: #a0aec0;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 500;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: inherit;
+    line-height: 1.4;
+}
+
+.perf-table-legend-pill .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #cbd5e0;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.perf-table-legend-pill.active {
+    background: #f7fafc;
+    color: #2d3748;
+    border-color: #cbd5e0;
+}
+
+.perf-table-legend-pill:not(.active) .legend-dot {
+    opacity: 0.3;
+}
+
+.perf-table-legend-pill:hover {
+    border-color: #a0aec0;
 }
 
 /* Colours come from the project's global .perf-positive / .perf-negative
