@@ -67,7 +67,7 @@ class DataService {
         const apiUrl = `https://api.github.com/repos/${this.config.owner}/${this.config.repo}/contents/${dirPath}?ref=${this.config.branch}`;
         const response = await fetch(apiUrl, {
             headers: {
-                'Authorization': `token ${this.config.githubToken}`,
+                'Authorization': `Bearer ${this.config.githubToken}`,
                 'Accept': 'application/vnd.github.v3+json'
             }
         });
@@ -173,7 +173,7 @@ class DataService {
         try {
             const response = await fetch(apiUrl, {
                 headers: {
-                    'Authorization': `token ${this.config.githubToken}`,
+                    'Authorization': `Bearer ${this.config.githubToken}`,
                     'Accept': 'application/vnd.github.v3+json'
                 }
             });
@@ -307,7 +307,7 @@ class DataService {
         try {
             // Try to fetch the user profile to verify token
             const userRes = await fetch('https://api.github.com/user', {
-                headers: { 'Authorization': `token ${this.config.githubToken}` }
+                headers: { 'Authorization': `Bearer ${this.config.githubToken}` }
             });
 
             if (!userRes.ok) {
@@ -317,7 +317,7 @@ class DataService {
 
             // Try to fetch the repo (confirms access rights)
             const repoRes = await fetch(`https://api.github.com/repos/${this.config.owner}/${this.config.repo}`, {
-                headers: { 'Authorization': `token ${this.config.githubToken}` }
+                headers: { 'Authorization': `Bearer ${this.config.githubToken}` }
             });
 
             if (!repoRes.ok) {

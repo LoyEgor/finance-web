@@ -2,11 +2,33 @@
    INVESTMENT PORTFOLIO TRACKER - STYLES
    =========================================== */
 
+/* Centralised palette. Add new colours here instead of inlining hex values
+   so theming / contrast tweaks happen in one place. Brand and chart-segment
+   colours live in JS (SOURCE_COLORS) and are intentionally not duplicated. */
+:root {
+    /* Surfaces & borders (slate family) */
+    --color-bg-page:      #f7fafc;
+    --color-bg-hover:     #edf2f7;
+    --color-border:       #e2e8f0;
+    --color-border-hover: #cbd5e0;
+
+    /* Text */
+    --color-text:         #2d3748;
+    --color-text-muted:   #4a5568;
+    --color-text-subtle:  #718096;
+    --color-text-placeholder: #a0aec0;
+
+    /* Semantic */
+    --color-positive: #22c55e;
+    --color-negative: #ef4444;
+    --color-accent:   #4299e1;
+}
+
 /* Base */
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background-color: #f7fafc;
-    color: #2d3748;
+    background-color: var(--color-bg-page);
+    color: var(--color-text);
     padding: 20px;
     max-width: 800px;
     margin: 0 auto;
@@ -37,7 +59,7 @@ h2 {
 
 .chart-toggle-group {
     display: flex;
-    background: #edf2f7;
+    background: var(--color-bg-hover);
     padding: 3px;
     border-radius: 8px;
     margin-bottom: 10px;
@@ -50,14 +72,14 @@ h2 {
     border-radius: 6px;
     font-size: 0.8em;
     font-weight: 500;
-    color: #718096;
+    color: var(--color-text-subtle);
     transition: all 0.2s;
     user-select: none;
 }
 
 .chart-toggle-option.active {
     background: white;
-    color: #2d3748;
+    color: var(--color-text);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
@@ -76,7 +98,7 @@ h2 {
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
     margin-bottom: 12px;
     overflow: hidden;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
 }
 
 details {
@@ -114,7 +136,7 @@ summary::-webkit-details-marker {
 summary::after {
     content: '+';
     font-size: 18px;
-    color: #a0aec0;
+    color: var(--color-text-placeholder);
     margin-left: 10px;
     width: 20px;
     text-align: center;
@@ -122,14 +144,14 @@ summary::after {
 
 details[open] summary::after {
     content: '−';
-    color: #4a5568;
+    color: var(--color-text-muted);
 }
 
 /* ===========================================
    Table Content
    =========================================== */
 .details-content {
-    border-top: 1px solid #edf2f7;
+    border-top: 1px solid var(--color-bg-hover);
     background-color: #ffffff;
 }
 
@@ -141,7 +163,7 @@ table {
 
 td {
     padding: 10px 15px;
-    border-bottom: 1px solid #edf2f7;
+    border-bottom: 1px solid var(--color-bg-hover);
     vertical-align: middle;
 }
 
@@ -156,7 +178,7 @@ tr:last-child td {
     font-weight: 500;
     font-size: 0.95em;
     white-space: nowrap;
-    color: #2d3748;
+    color: var(--color-text);
 }
 
 .asset-name {
@@ -205,15 +227,15 @@ tr:last-child td {
    Toggle Button (Percent / Money)
    =========================================== */
 .toggle-btn {
-    background: #edf2f7;
-    color: #4a5568;
+    background: var(--color-bg-hover);
+    color: var(--color-text-muted);
     padding: 4px 12px;
     border-radius: 12px;
     font-size: 0.85em;
     margin-left: auto;
     margin-right: 10px;
     cursor: pointer;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     transition: all 0.2s;
     min-width: 70px;
     text-align: center;
@@ -224,8 +246,8 @@ tr:last-child td {
 }
 
 .toggle-btn:hover {
-    background: #e2e8f0;
-    border-color: #cbd5e0;
+    background: var(--color-border);
+    border-color: var(--color-border-hover);
 }
 
 .toggle-btn:active {
@@ -258,7 +280,7 @@ tr:last-child td {
     font-size: 1.3em;
     font-weight: 800;
     margin-top: 20px;
-    color: #22c55e;
+    color: var(--color-positive);
     background: #f0fff4;
     padding: 15px;
     border-radius: 12px;
@@ -272,14 +294,14 @@ tr:last-child td {
 .loading {
     text-align: center;
     padding: 40px;
-    color: #718096;
+    color: var(--color-text-subtle);
     font-size: 1.1em;
 }
 
 .error {
     text-align: center;
     padding: 20px;
-    color: #ef4444;
+    color: var(--color-negative);
     background: #fff5f5;
     border: 1px solid #feb2b2;
     border-radius: 8px;
@@ -303,20 +325,20 @@ tr:last-child td {
     background: transparent;
     padding: 12px 15px;
     border-radius: 10px;
-    border: 1px dashed #cbd5e0;
+    border: 1px dashed var(--color-border-hover);
     text-align: center;
 }
 
 .perf-item.perf-tab {
     background: white;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-style: solid;
 }
 
 .perf-label {
     display: block;
     font-size: 0.75em;
-    color: #718096;
+    color: var(--color-text-subtle);
     margin-bottom: 4px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -327,20 +349,20 @@ tr:last-child td {
     font-size: 1.1em;
     font-weight: 700;
     font-family: monospace;
-    color: #2d3748;
+    color: var(--color-text);
 }
 
 .perf-highlight {
-    background: #f7fafc;
+    background: var(--color-bg-page);
     border-width: 2px;
 }
 
 .perf-positive {
-    color: #22c55e !important;
+    color: var(--color-positive) !important;
 }
 
 .perf-negative {
-    color: #ef4444 !important;
+    color: var(--color-negative) !important;
 }
 
 /* Tab-enabled perf items */
@@ -351,14 +373,14 @@ tr:last-child td {
 }
 
 .perf-tab:hover {
-    background: #f7fafc;
+    background: var(--color-bg-page);
     transform: translateY(-2px);
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
 }
 
 .perf-tab.active {
     background: #ebf8ff;
-    border-color: #4299e1;
+    border-color: var(--color-accent);
     border-width: 2px;
 }
 
@@ -369,7 +391,7 @@ tr:last-child td {
     left: 20%;
     right: 20%;
     height: 3px;
-    background: #4299e1;
+    background: var(--color-accent);
     border-radius: 3px 3px 0 0;
 }
 
@@ -379,18 +401,18 @@ tr:last-child td {
 .transfers-empty {
     text-align: center;
     padding: 40px;
-    color: #718096;
+    color: var(--color-text-subtle);
     font-size: 1em;
     background: white;
     border-radius: 12px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
 }
 
 .transfers-date-header {
     font-size: 0.85em;
-    color: #718096;
+    color: var(--color-text-subtle);
     padding: 8px 15px;
-    background: #f7fafc;
+    background: var(--color-bg-page);
     border-radius: 8px;
     margin-bottom: 10px;
     font-weight: 500;
@@ -403,7 +425,7 @@ tr:last-child td {
     padding: 12px 15px;
     background: white;
     border-radius: 10px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     margin-bottom: 8px;
 }
 
@@ -428,17 +450,17 @@ tr:last-child td {
 
 .transfer-date {
     font-size: 0.8em;
-    color: #718096;
+    color: var(--color-text-subtle);
 }
 
 .transfer-path {
     font-size: 0.9em;
-    color: #4a5568;
+    color: var(--color-text-muted);
 }
 
 .transfer-note {
     font-size: 0.8em;
-    color: #a0aec0;
+    color: var(--color-text-placeholder);
     font-style: italic;
     margin-top: 2px;
 }
@@ -452,15 +474,15 @@ tr:last-child td {
 }
 
 .transfer-amount.deposit {
-    color: #22c55e;
+    color: var(--color-positive);
 }
 
 .transfer-amount.withdraw {
-    color: #ef4444;
+    color: var(--color-negative);
 }
 
 .transfer-amount.move {
-    color: #4a5568;
+    color: var(--color-text-muted);
 }
 
 /* ===========================================
@@ -491,10 +513,10 @@ tr:last-child td {
 }
 
 .nav-btn {
-    background: #edf2f7;
-    color: #4a5568;
+    background: var(--color-bg-hover);
+    color: var(--color-text-muted);
     width: 30px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -505,8 +527,8 @@ tr:last-child td {
 }
 
 .nav-btn:hover:not(:disabled) {
-    background: #e2e8f0;
-    border-color: #cbd5e0;
+    background: var(--color-border);
+    border-color: var(--color-border-hover);
 }
 
 .nav-btn:active:not(:disabled) {
@@ -529,10 +551,10 @@ tr:last-child td {
 }
 
 #monthSelector {
-    background: #edf2f7;
-    color: #4a5568;
+    background: var(--color-bg-hover);
+    color: var(--color-text-muted);
     padding: 0 26px 0 12px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     cursor: pointer;
     font-size: 0.85em;
     line-height: 1;
@@ -547,30 +569,30 @@ tr:last-child td {
 }
 
 #monthSelector:hover {
-    background-color: #e2e8f0;
-    border-color: #cbd5e0;
+    background-color: var(--color-border);
+    border-color: var(--color-border-hover);
 }
 
 #monthSelector:focus {
     outline: none;
-    border-color: #4299e1;
+    border-color: var(--color-accent);
     box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.2);
 }
 
 .edit-btn {
-    background: #edf2f7;
-    color: #4a5568;
+    background: var(--color-bg-hover);
+    color: var(--color-text-muted);
     padding: 6px 14px;
     border-radius: 8px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     cursor: pointer;
     font-size: 0.9em;
     transition: all 0.2s;
 }
 
 .edit-btn:hover {
-    background: #e2e8f0;
-    border-color: #cbd5e0;
+    background: var(--color-border);
+    border-color: var(--color-border-hover);
 }
 
 /* ===========================================
@@ -615,7 +637,7 @@ tr:last-child td {
     display: block;
     font-weight: 600;
     margin-bottom: 8px;
-    color: #4a5568;
+    color: var(--color-text-muted);
     font-size: 0.9em;
 }
 
@@ -623,7 +645,7 @@ tr:last-child td {
     width: 100%;
     height: 180px;
     padding: 12px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     font-family: monospace;
     font-size: 12px;
@@ -633,7 +655,7 @@ tr:last-child td {
 
 .modal-field textarea:focus {
     outline: none;
-    border-color: #4299e1;
+    border-color: var(--color-accent);
     box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.2);
 }
 
@@ -655,7 +677,7 @@ tr:last-child td {
 }
 
 .btn-primary {
-    background: #4299e1;
+    background: var(--color-accent);
     color: white;
 }
 
@@ -664,13 +686,13 @@ tr:last-child td {
 }
 
 .btn-secondary {
-    background: #edf2f7;
-    color: #4a5568;
-    border: 1px solid #e2e8f0;
+    background: var(--color-bg-hover);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
 }
 
 .btn-secondary:hover {
-    background: #e2e8f0;
+    background: var(--color-border);
 }
 
 /* ===========================================
@@ -678,7 +700,7 @@ tr:last-child td {
    =========================================== */
 #calc-tooltip {
     position: fixed;
-    background: #2d3748;
+    background: var(--color-text);
     color: #fff;
     padding: 10px 14px;
     border-radius: 8px;
@@ -715,12 +737,12 @@ tr:last-child td {
 }
 
 .delta.positive {
-    color: #22c55e;
+    color: var(--color-positive);
     background: rgba(34, 197, 94, 0.1);
 }
 
 .delta.negative {
-    color: #ef4444;
+    color: var(--color-negative);
     background: rgba(239, 68, 68, 0.1);
 }
 
@@ -738,7 +760,7 @@ tr:last-child td {
     text-transform: uppercase;
     padding: 2px 5px;
     border-radius: 3px;
-    background: #ef4444;
+    background: var(--color-negative);
     color: white;
     margin-left: 6px;
 }
@@ -765,15 +787,15 @@ tr:last-child td {
    Subgroup Headers (ETF/Stocks grouping)
    =========================================== */
 .subgroup-header td {
-    background: #f7fafc;
-    border-bottom: 1px solid #e2e8f0;
+    background: var(--color-bg-page);
+    border-bottom: 1px solid var(--color-border);
     padding: 8px 15px;
 }
 
 .subgroup-label {
     font-weight: 600;
     font-size: 0.85em;
-    color: #4a5568;
+    color: var(--color-text-muted);
 }
 
 .subgroup-header .toggle-btn {
@@ -797,7 +819,7 @@ tr:last-child td {
     border-radius: 12px;
     padding: 0;
     /* Removed padding to match category-block style if needed, or keeping it but with border */
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
     overflow: hidden;
 }
@@ -810,10 +832,10 @@ tr:last-child td {
     font-weight: 600;
     padding: 12px 15px;
     background-color: #fff;
-    border-bottom: 1px solid #edf2f7;
+    border-bottom: 1px solid var(--color-bg-hover);
     margin-bottom: 0;
     /* Removed large margin */
-    color: #2d3748;
+    color: var(--color-text);
 }
 
 .forecast-icon {
@@ -824,9 +846,9 @@ tr:last-child td {
 .forecast-yield {
     margin-left: auto;
     font-size: 12px;
-    background: #edf2f7;
+    background: var(--color-bg-hover);
     /* Light gray instead of transparent white */
-    color: #4a5568;
+    color: var(--color-text-muted);
     padding: 4px 10px;
     border-radius: 12px;
     font-family: monospace;
@@ -844,13 +866,13 @@ tr:last-child td {
 }
 
 .forecast-benchmarks {
-    border-top: 1px dashed #e2e8f0;
+    border-top: 1px dashed var(--color-border);
     padding-top: 15px;
     margin-top: 0;
 }
 
 .forecast-projection {
-    border-top: 1px dashed #e2e8f0;
+    border-top: 1px dashed var(--color-border);
     padding-top: 15px;
     margin-top: 0;
 }
@@ -896,9 +918,9 @@ tr:last-child td {
 .performance-table thead th {
     text-align: right;
     padding: 6px 4px;
-    color: #4a5568;
+    color: var(--color-text-muted);
     font-weight: 600;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     white-space: nowrap;
     font-size: 11px;
     user-select: none;
@@ -911,13 +933,13 @@ tr:last-child td {
 
 .performance-table thead th[data-sort-key]:hover,
 .performance-table thead th[data-toggle-bench]:hover {
-    color: #2d3748;
+    color: var(--color-text);
 }
 
 /* α header is interactive (toggles VOO/VT) — slightly emphasised so the
    "(VOO)/(VT)" label feels tappable rather than passive. */
 .performance-table thead th[data-toggle-bench] {
-    color: #2d3748;
+    color: var(--color-text);
 }
 
 .performance-table thead th:first-child {
@@ -927,7 +949,7 @@ tr:last-child td {
 }
 
 .performance-table thead th.sort-active {
-    color: #2d3748;
+    color: var(--color-text);
 }
 
 .performance-table thead th.sort-active::after {
@@ -949,14 +971,14 @@ tr:last-child td {
 .performance-table tbody td:first-child {
     text-align: left;
     font-weight: 500;
-    color: #2d3748;
+    color: var(--color-text);
     padding-left: 6px;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 .performance-table tr.row-benchmark td {
-    color: #718096;
+    color: var(--color-text-subtle);
     font-style: italic;
 }
 
@@ -973,11 +995,11 @@ tr:last-child td {
 
 .perf-table-legend-pill {
     background: white;
-    color: #a0aec0;
+    color: var(--color-text-placeholder);
     font-size: 11px;
     padding: 3px 9px;
     border-radius: 12px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     cursor: pointer;
     user-select: none;
     font-weight: 500;
@@ -993,15 +1015,15 @@ tr:last-child td {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #cbd5e0;
+    background: var(--color-border-hover);
     display: inline-block;
     flex-shrink: 0;
 }
 
 .perf-table-legend-pill.active {
-    background: #f7fafc;
-    color: #2d3748;
-    border-color: #cbd5e0;
+    background: var(--color-bg-page);
+    color: var(--color-text);
+    border-color: var(--color-border-hover);
 }
 
 .perf-table-legend-pill:not(.active) .legend-dot {
@@ -1009,11 +1031,11 @@ tr:last-child td {
 }
 
 .perf-table-legend-pill:hover {
-    border-color: #a0aec0;
+    border-color: var(--color-text-placeholder);
 }
 
 /* Colours come from the project's global .perf-positive / .perf-negative
-   (#22c55e / #ef4444). Sharpe uses the same logic — one green, one red. */
+   (var(--color-positive) / var(--color-negative)). Sharpe uses the same logic — one green, one red. */
 
 /* ===========================================
    Month-switch transition (swipe / arrows / selector)
@@ -1031,14 +1053,14 @@ tr:last-child td {
     border-radius: 10px;
     padding: 12px;
     text-align: center;
-    border: 1px dashed #cbd5e0;
+    border: 1px dashed var(--color-border-hover);
     /* Match .perf-item style */
 }
 
 .forecast-label {
     display: block;
     font-size: 0.75em;
-    color: #718096;
+    color: var(--color-text-subtle);
     margin-bottom: 4px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -1069,10 +1091,10 @@ tr:last-child td {
     right: 0;
     top: 50%;
     transform: translateY(-50%);
-    background: #edf2f7;
-    color: #4a5568;
+    background: var(--color-bg-hover);
+    color: var(--color-text-muted);
     width: 30px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     cursor: pointer;
     display: flex;
     justify-content: center;
@@ -1083,8 +1105,8 @@ tr:last-child td {
 }
 
 .settings-btn:hover {
-    background: #e2e8f0;
-    border-color: #cbd5e0;
+    background: var(--color-border);
+    border-color: var(--color-border-hover);
 }
 
 .settings-btn:active {
@@ -1102,7 +1124,7 @@ tr:last-child td {
    =========================================== */
 .source-toggle-group {
     display: flex;
-    background: #edf2f7;
+    background: var(--color-bg-hover);
     padding: 4px;
     border-radius: 8px;
     margin-bottom: 20px;
@@ -1116,13 +1138,13 @@ tr:last-child td {
     border-radius: 6px;
     font-size: 0.9em;
     font-weight: 500;
-    color: #718096;
+    color: var(--color-text-subtle);
     transition: all 0.2s;
 }
 
 .source-toggle-option.active {
     background: white;
-    color: #2d3748;
+    color: var(--color-text);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
@@ -1137,13 +1159,13 @@ tr:last-child td {
 
 .auth-status.success {
     background: #f0fff4;
-    color: #22c55e;
+    color: var(--color-positive);
     border: 1px solid #c6f6d5;
 }
 
 .auth-status.error {
     background: #fff5f5;
-    color: #ef4444;
+    color: var(--color-negative);
     border: 1px solid #feb2b2;
 }
 
@@ -1162,14 +1184,14 @@ tr:last-child td {
     display: block;
     margin-bottom: 6px;
     font-size: 0.85em;
-    color: #718096;
+    color: var(--color-text-subtle);
     font-weight: 600;
 }
 
 .input-field {
     width: 100%;
     padding: 10px 12px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     font-size: 0.95em;
     transition: border-color 0.2s;
@@ -1179,13 +1201,13 @@ tr:last-child td {
 
 .input-field:focus {
     outline: none;
-    border-color: #4299e1;
+    border-color: var(--color-accent);
     box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.1);
 }
 
 .input-hint {
     font-size: 0.8em;
-    color: #a0aec0;
+    color: var(--color-text-placeholder);
     margin-top: 4px;
 }
 
@@ -1195,4 +1217,18 @@ tr:last-child td {
 
 .github-only.visible {
     display: block;
+}
+
+/* Respect users who request reduced motion (OS-level accessibility setting).
+   Collapses transitions/animations to near-zero so vestibular-sensitive users
+   don't get hit by month-swipe slides, chart segment animations, etc. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+    }
 }

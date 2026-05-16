@@ -4,6 +4,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Content Security Policy: defense-in-depth against XSS.
+         Inline scripts/styles are allowed because templates use inline onclick attributes;
+         data-driven content is separately escaped via escapeHtml() in app.js. -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data:;
+        font-src 'self';
+        connect-src 'self' https://api.github.com;
+        object-src 'none';
+        base-uri 'self';
+        form-action 'self';
+        frame-ancestors 'none';
+    ">
+
     <title>Investment Portfolio</title>
 
     <!-- Favicon -->
@@ -17,14 +34,16 @@
     <meta name="apple-mobile-web-app-title" content="Portfolio">
 
     <!-- Web App Manifest (PWA / Android) -->
-    <link rel="manifest" href="./manifest.json?v=1778955017">
+    <link rel="manifest" href="./manifest.json?v=1778958776">
     <meta name="theme-color" content="#1a1a2e">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="./css/styles.css?v=1778955017">
+    <link rel="stylesheet" href="./css/styles.css?v=1778958776">
 
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Chart.js (pinned + SRI to prevent CDN tampering) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"
+            integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+            crossorigin="anonymous"></script>
 </head>
 
 <body>
@@ -73,9 +92,9 @@
     <!-- Portfolio View -->
     <div id="view-portfolio">
         <div class="chart-container">
-            <div class="chart-toggle-group" id="chartToggle">
-                <div class="chart-toggle-option active" data-mode="category">Categories</div>
-                <div class="chart-toggle-option" data-mode="source">Sources</div>
+            <div class="chart-toggle-group" id="chartToggle" role="tablist" aria-label="Chart breakdown mode">
+                <div class="chart-toggle-option active" data-mode="category" role="tab" tabindex="0" aria-selected="true">Categories</div>
+                <div class="chart-toggle-option" data-mode="source" role="tab" tabindex="0" aria-selected="false">Sources</div>
             </div>
             <div class="chart-canvas-wrapper">
                 <canvas id="portfolioChart"></canvas>
@@ -140,9 +159,9 @@
             <div class="forecast-header">
                 <span>YTD Performance Comparison</span>
             </div>
-            <div class="chart-toggle-group perf-view-toggle" id="perfViewToggle">
-                <div class="chart-toggle-option active" data-view="chart">Chart</div>
-                <div class="chart-toggle-option" data-view="table">Table</div>
+            <div class="chart-toggle-group perf-view-toggle" id="perfViewToggle" role="tablist" aria-label="Performance view">
+                <div class="chart-toggle-option active" data-view="chart" role="tab" tabindex="0" aria-selected="true">Chart</div>
+                <div class="chart-toggle-option" data-view="table" role="tab" tabindex="0" aria-selected="false">Table</div>
             </div>
 
             <div id="perf-view-chart" class="performance-chart-wrapper">
@@ -164,20 +183,20 @@
     </div>
 
     <!-- Settings Modal -->
-    <div id="modal-settings" class="modal-overlay" style="display: none;">
+    <div id="modal-settings" class="modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="modal-settings-title">
         <div class="modal-content">
-            <h3>Data Source</h3>
+            <h3 id="modal-settings-title">Data Source</h3>
 
-            <div class="source-toggle-group">
-                <div class="source-toggle-option active" data-source="local">Local (Demo)</div>
-                <div class="source-toggle-option" data-source="remote">Remote (GitHub)</div>
+            <div class="source-toggle-group" role="tablist" aria-label="Data source">
+                <div class="source-toggle-option active" data-source="local" role="tab" tabindex="0" aria-selected="true">Local (Demo)</div>
+                <div class="source-toggle-option" data-source="remote" role="tab" tabindex="0" aria-selected="false">Remote (GitHub)</div>
             </div>
 
             <div id="settings-remote-fields" class="github-only">
                 <div class="input-group">
                     <label class="input-label">GitHub Token</label>
                     <input type="password" id="input-token" class="input-field" placeholder="ghp_...">
-                    <div class="input-hint">Saved locally in the browser.</div>
+                    <div class="input-hint">Saved locally in the browser. Use a <strong>fine-grained PAT</strong> scoped to this single repo (read-only contents) to limit blast radius if leaked.</div>
                 </div>
 
                 <div style="display: flex; gap: 10px;">
@@ -212,8 +231,8 @@
         </div>
     </div>
 
-    <script src="./js/data-service.js?v=1778955017"></script>
-    <script src="./js/app.js?v=1778955017"></script>
+    <script src="./js/data-service.js?v=1778958776"></script>
+    <script src="./js/app.js?v=1778958776"></script>
 
 </body>
 

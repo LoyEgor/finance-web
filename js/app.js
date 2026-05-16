@@ -46,6 +46,12 @@ const SOURCE_COLORS = {
 // ===========================================
 // ETF CLASSIFICATION (UI-only subgrouping for stocks)
 // ===========================================
+// Region naming convention — three coexisting layers (prefixed, never truncated):
+//   ETF_REGION values:        'us' / 'europe' / 'asia'
+//   classifyStockItem output: 'etf_us' / 'etf_europe' / 'etf_asia'
+//   yields/balances keys:     'stocks_etf_us' / 'stocks_etf_europe' / 'stocks_etf_asia'
+//   perf-table row ids:       same as classifyStockItem (etf_us / etf_europe / etf_asia)
+// Use the full word — never 'eu' for 'europe'.
 const ETF_REGION = {
     // US
     VOO: 'us', SPY: 'us', IVV: 'us', SPLG: 'us', VTI: 'us', ITOT: 'us', SCHB: 'us', RSP: 'us',
@@ -76,6 +82,18 @@ function classifyStockItem(name) {
     if (region === 'europe') return 'etf_europe';
     if (region === 'asia') return 'etf_asia';
     return 'companies';
+}
+
+// ===========================================
+// UTILITY: Escape HTML
+// ===========================================
+// Use whenever interpolating user-controlled data (asset names, category titles,
+// transfer fields, error messages) into innerHTML template strings. Hardcoded
+// HTML fragments and numeric/formatted values don't need it.
+const _escapeHtmlMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/[&<>"']/g, ch => _escapeHtmlMap[ch]);
 }
 
 // ===========================================
@@ -709,7 +727,17 @@ function bucketStats(monthlyYields, compoundedSeries) {
 }
 
 // 5. Orchestrator
+// Memoization: keyed by currentMonthId, lives for the session. Wiped on reload
+// (which is what settings-save triggers, so config changes implicitly invalidate).
+// Invariant: `benchmarksData` is treated as immutable per session — if it ever
+// becomes dynamic (e.g. user-editable benchmarks), include it in the cache key.
+const _yearStatsCache = new Map();
+
 async function calculateYearStats(currentMonthId, benchmarksData) {
+    if (_yearStatsCache.has(currentMonthId)) {
+        return _yearStatsCache.get(currentMonthId);
+    }
+
     // 1. Fetch sequence of months from Jan up to currentMonthId
     const sequence = await fetchYearSequence(currentMonthId);
 
@@ -985,7 +1013,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         companies:    bucketStats(subStocksYields.stocks_companies,   subStocksSeries.stocks_companies),
         etf_total:    bucketStats(subStocksYields.stocks_etf,         subStocksSeries.stocks_etf),
         etf_us:       bucketStats(subStocksYields.stocks_etf_us,      subStocksSeries.stocks_etf_us),
-        etf_eu:       bucketStats(subStocksYields.stocks_etf_europe,  subStocksSeries.stocks_etf_europe),
+        etf_europe:   bucketStats(subStocksYields.stocks_etf_europe,  subStocksSeries.stocks_etf_europe),
         etf_asia:     bucketStats(subStocksYields.stocks_etf_asia,    subStocksSeries.stocks_etf_asia),
         stocks_total: bucketStats(categoryYields.stocks || [],        categorySeries.stocks || []),
         vt:           bucketStats(benchmarkYields.vt,                 benchmarkSeries.vt),
@@ -1005,7 +1033,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         companies:    (prevSubStocksBalances.stocks_companies   || 0) / lastStocksTotal,
         etf_total:    (prevSubStocksBalances.stocks_etf         || 0) / lastStocksTotal,
         etf_us:       (prevSubStocksBalances.stocks_etf_us      || 0) / lastStocksTotal,
-        etf_eu:       (prevSubStocksBalances.stocks_etf_europe  || 0) / lastStocksTotal,
+        etf_europe:   (prevSubStocksBalances.stocks_etf_europe  || 0) / lastStocksTotal,
         etf_asia:     (prevSubStocksBalances.stocks_etf_asia    || 0) / lastStocksTotal,
         stocks_total: 1
     } : null;
@@ -1043,7 +1071,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         };
     }
 
-    return {
+    const result = {
         monthYield: currentMonthYield,
         monthProfit: currentMonthProfit,
         ytd: ytd,
@@ -1070,6 +1098,8 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         // Projection (used by forecast tiles, not by chart)
         projection: projection
     };
+    _yearStatsCache.set(currentMonthId, result);
+    return result;
 }
 
 // ===========================================
@@ -1636,7 +1666,7 @@ async function loadMonth(monthId) {
 
     } catch (error) {
         console.error('Failed to load portfolio data:', error);
-        showError(`Failed to load data: ${error.message}`);
+        showError(`Failed to load data: ${escapeHtml(error.message)}`);
     }
 }
 
@@ -1808,8 +1838,8 @@ function renderPortfolio(data, comparison = null) {
             <tr class="${rowClass}">
                 <td>
                     <div class="asset-name">
-                        ${item.name}
-                        <span class="badge ${getBadgeClass(item.source)}">${item.source}</span>${newBadge}
+                        ${escapeHtml(item.name)}
+                        <span class="badge ${getBadgeClass(item.source)}">${escapeHtml(item.source)}</span>${newBadge}
                     </div>
                 </td>
                 <td class="amount">${deltaBadge}${displayVal}</td>
@@ -1898,8 +1928,8 @@ function renderPortfolio(data, comparison = null) {
             <details>
                 <summary>
                     <div class="header-title">
-                        <span class="color-dot" style="background-color: ${cat.color};"></span>
-                        <span>${cat.title}</span>
+                        <span class="color-dot" style="background-color: ${escapeHtml(cat.color)};"></span>
+                        <span>${escapeHtml(cat.title)}</span>
                     </div>
                     
                     <div style="display: flex; align-items: center; margin-left: auto;">
@@ -1937,12 +1967,6 @@ let lastChartData = null;
 function renderChart() {
     const chartCanvas = document.getElementById('portfolioChart');
     if (!chartCanvas || !lastChartData) return;
-
-    // Destroy previous chart
-    if (portfolioChart) {
-        portfolioChart.destroy();
-        portfolioChart = null;
-    }
 
     const { categories, grandTotal } = lastChartData;
     const chartLabels = [];
@@ -2056,12 +2080,15 @@ function renderChart() {
         });
     }
 
-    // Grand total string for center
+    // Grand total string for center. Stored on the chart instance so the plugin
+    // (registered once at chart creation) always reads the current value.
     const grandTotalStr = formatMoney(grandTotal);
 
     const centerTextPlugin = {
         id: 'centerText',
         beforeDraw: function (chart) {
+            const text = chart.$grandTotalStr || '';
+            if (!text) return;
             const ctx = chart.ctx;
             const { top, bottom, left, right } = chart.chartArea;
             const centerX = (left + right) / 2;
@@ -2073,23 +2100,42 @@ function renderChart() {
             ctx.fillStyle = '#2d3748';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(grandTotalStr, centerX, centerY);
+            ctx.fillText(text, centerX, centerY);
             ctx.restore();
         }
     };
+
+    const datasetCfg = {
+        data: chartValues,
+        backgroundColor: chartColors,
+        borderWidth: chartMode === 'source' ? 0 : chartBorderWidths,
+        borderColor: chartMode === 'source' ? 'transparent' : chartBorderColors,
+        hoverOffset: 6
+    };
+
+    // Reuse existing chart instance when possible — avoids destroy/recreate jank
+    // and lets Chart.js animate the segment transitions.
+    if (portfolioChart) {
+        portfolioChart.$grandTotalStr = grandTotalStr;
+        portfolioChart.data.labels = chartLabels;
+        Object.assign(portfolioChart.data.datasets[0], datasetCfg);
+        // chartSegmentNames / chartDeltas are read by tooltip callbacks via closure
+        // captured at creation; refresh the references the callbacks dereference.
+        portfolioChart.$chartSegmentNames = chartSegmentNames;
+        portfolioChart.$chartDeltas = chartDeltas;
+        portfolioChart.$grandTotal = grandTotal;
+        // Chart.js animates via canvas/rAF and ignores prefers-reduced-motion;
+        // skip the segment transition explicitly when the user opted out.
+        portfolioChart.update(prefersReducedMotion() ? 'none' : undefined);
+        return;
+    }
 
     const ctx = chartCanvas.getContext('2d');
     portfolioChart = new Chart(ctx, {
         type: 'doughnut',
         data: {
             labels: chartLabels,
-            datasets: [{
-                data: chartValues,
-                backgroundColor: chartColors,
-                borderWidth: chartMode === 'source' ? 0 : chartBorderWidths,
-                borderColor: chartMode === 'source' ? 'transparent' : chartBorderColors,
-                hoverOffset: 6
-            }]
+            datasets: [datasetCfg]
         },
         plugins: [centerTextPlugin],
         options: {
@@ -2126,16 +2172,19 @@ function renderChart() {
                         // the numbered list consistent with the accordion.
                         title: function (items) {
                             if (!items.length) return '';
-                            return chartSegmentNames[items[0].dataIndex] || items[0].label;
+                            const names = items[0].chart.$chartSegmentNames || [];
+                            return names[items[0].dataIndex] || items[0].label;
                         },
                         label: function (context) {
+                            const total = context.chart.$grandTotal || 0;
                             const val = context.raw;
-                            const pct = ((val / grandTotal) * 100).toFixed(2) + '%';
+                            const pct = total > 0 ? ((val / total) * 100).toFixed(2) + '%' : '0.00%';
                             return ` ${pct} (${val.toLocaleString('en-US')} $)`;
                         },
                         footer: function (items) {
                             if (!items.length) return '';
-                            const delta = chartDeltas[items[0].dataIndex];
+                            const deltas = items[0].chart.$chartDeltas || [];
+                            const delta = deltas[items[0].dataIndex];
                             if (delta === null || delta === undefined) return '';
                             const sign = delta >= 0 ? '+' : '';
                             return `Share: ${sign}${delta.toFixed(2)}%`;
@@ -2145,6 +2194,10 @@ function renderChart() {
             }
         }
     });
+    portfolioChart.$grandTotalStr = grandTotalStr;
+    portfolioChart.$chartSegmentNames = chartSegmentNames;
+    portfolioChart.$chartDeltas = chartDeltas;
+    portfolioChart.$grandTotal = grandTotal;
 }
 
 // ===========================================
@@ -2196,13 +2249,13 @@ function renderPerformanceChart(stats) {
     const canvas = document.getElementById('performanceChart');
     if (!section || !canvas) return;
 
-    if (performanceChart) {
-        performanceChart.destroy();
-        performanceChart = null;
-    }
-
     if (!stats || !stats.monthLabels || stats.monthLabels.length < 2) {
         section.style.display = 'none';
+        // Free the chart instance — section is being hidden, no reuse target.
+        if (performanceChart) {
+            performanceChart.destroy();
+            performanceChart = null;
+        }
         return;
     }
 
@@ -2323,6 +2376,26 @@ function renderPerformanceChart(stats) {
         });
     }
 
+    // Preserve user toggles (hidden datasets) across re-renders. Chart.js stores
+    // hidden state on the chart instance; replacing the datasets array would reset
+    // it. We map by label to keep flags stable across snapshot/month switches.
+    if (performanceChart) {
+        const prevHidden = new Map();
+        performanceChart.data.datasets.forEach((ds, i) => {
+            prevHidden.set(ds.label, performanceChart.getDatasetMeta(i).hidden);
+        });
+        datasets.forEach(ds => {
+            if (prevHidden.has(ds.label)) {
+                const wasHidden = prevHidden.get(ds.label);
+                if (wasHidden !== null) ds.hidden = wasHidden;
+            }
+        });
+        performanceChart.data.labels = stats.monthLabels;
+        performanceChart.data.datasets = datasets;
+        performanceChart.update(prefersReducedMotion() ? 'none' : undefined);
+        return;
+    }
+
     const ctx = canvas.getContext('2d');
     performanceChart = new Chart(ctx, {
         type: 'line',
@@ -2380,7 +2453,7 @@ function getAllPerfRows() {
         { id: 'companies',    label: 'Companies',     dot: '#4c1d95' },
         { id: 'etf_total',    label: 'ETF total',     dot: '#6d28d9' },
         { id: 'etf_us',       label: 'ETF USA',       dot: '#8b5cf6' },
-        { id: 'etf_eu',       label: 'ETF Europe',    dot: '#a78bfa' },
+        { id: 'etf_europe',   label: 'ETF Europe',    dot: '#a78bfa' },
         { id: 'etf_asia',     label: 'ETF Asia',      dot: '#c4b5fd' },
         { id: 'stocks_total', label: 'Stocks',        dot: globalCategories.stocks?.color || '#9f7aea' },
         { id: 'safe',         label: labelFor('safe',   'Safe'),        dot: globalCategories.safe?.color   || '#ecc94b', isCategory: true },
@@ -2395,7 +2468,7 @@ function getAllPerfRows() {
 function defaultEnabledTableBuckets() {
     // Stocks-related + the two market benchmarks (VT, VOO) ON by default;
     // other categories (Safe / Cash / Crypto / Copytrading) OFF.
-    return new Set(['companies', 'etf_total', 'etf_us', 'etf_eu', 'etf_asia', 'stocks_total', 'vt', 'voo']);
+    return new Set(['companies', 'etf_total', 'etf_us', 'etf_europe', 'etf_asia', 'stocks_total', 'vt', 'voo']);
 }
 
 function renderPerformanceTable(stats) {
@@ -2437,8 +2510,8 @@ function renderPerformanceTable(stats) {
     if (legendEl) {
         legendEl.innerHTML = ALL.map(def => {
             const active = enabledTableBuckets.has(def.id);
-            const dot = def.dot ? `<span class="legend-dot" style="background:${def.dot}"></span>` : '';
-            return `<button type="button" class="perf-table-legend-pill${active ? ' active' : ''}" data-bucket-id="${def.id}">${dot}${escapeAttr(def.label)}</button>`;
+            const dot = def.dot ? `<span class="legend-dot" style="background:${escapeHtml(def.dot)}"></span>` : '';
+            return `<button type="button" class="perf-table-legend-pill${active ? ' active' : ''}" data-bucket-id="${escapeHtml(def.id)}">${dot}${escapeHtml(def.label)}</button>`;
         }).join('');
         legendEl.querySelectorAll('.perf-table-legend-pill').forEach(el => {
             el.addEventListener('click', () => {
@@ -2485,7 +2558,7 @@ function renderPerformanceTable(stats) {
     };
 
     const cellsForRow = (r) => `
-        <td title="${escapeAttr(r.label)}">${r.label}</td>
+        <td title="${escapeHtml(r.label)}">${escapeHtml(r.label)}</td>
         <td class="${cls(r.ytd)}">${fmtPct(r.ytd, true)}</td>
         <td>${fmtPct(r.vol)}</td>
         <td class="${cls(r.alpha)}">${fmtPct(r.alpha, true)}</td>
@@ -2502,7 +2575,7 @@ function renderPerformanceTable(stats) {
     ];
 
     const headerHtml = headers.map(h => {
-        const titleAttr = h.tip ? `title="${escapeAttr(h.tip)}"` : '';
+        const titleAttr = h.tip ? `title="${escapeHtml(h.tip)}"` : '';
         if (h.toggleBench) {
             return `<th data-toggle-bench="true" ${titleAttr}>${h.label}</th>`;
         }
@@ -2547,10 +2620,6 @@ function renderPerformanceTable(stats) {
     });
 }
 
-function escapeAttr(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-}
-
 // ===========================================
 // PERFORMANCE VIEW TOGGLE (Chart / Table) + α benchmark toggle
 // ===========================================
@@ -2563,8 +2632,11 @@ function setupPerfViewToggle() {
         toggle.addEventListener('click', (e) => {
             const opt = e.target.closest('.chart-toggle-option');
             if (!opt || opt.classList.contains('active')) return;
-            toggle.querySelectorAll('.chart-toggle-option').forEach(o => o.classList.remove('active'));
-            opt.classList.add('active');
+            toggle.querySelectorAll('.chart-toggle-option').forEach(o => {
+                const active = o === opt;
+                o.classList.toggle('active', active);
+                o.setAttribute('aria-selected', active ? 'true' : 'false');
+            });
             perfViewMode = opt.getAttribute('data-view');
             if (perfViewMode === 'chart') {
                 chartView.style.display = '';
@@ -2589,8 +2661,11 @@ function setupChartToggle() {
     toggle.addEventListener('click', (e) => {
         const option = e.target.closest('.chart-toggle-option');
         if (!option || option.classList.contains('active')) return;
-        toggle.querySelectorAll('.chart-toggle-option').forEach(o => o.classList.remove('active'));
-        option.classList.add('active');
+        toggle.querySelectorAll('.chart-toggle-option').forEach(o => {
+            const active = o === option;
+            o.classList.toggle('active', active);
+            o.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
         chartMode = option.getAttribute('data-mode');
         renderChart();
     });
@@ -2601,6 +2676,8 @@ function setupChartToggle() {
 // ===========================================
 function showError(message) {
     const listContainer = document.getElementById('portfolio-list');
+    // Note: HTML markup in `message` (e.g. <br>, <code>) is intentional from callers,
+    // so we don't escape the whole string. Callers must escape any user-supplied parts.
     listContainer.innerHTML = `<div class="error">${message}</div>`;
 }
 
@@ -2699,12 +2776,12 @@ function renderTransfers(allTransfersData, portfolioData) {
                 <div class="transfer-item">
                     <div class="transfer-content">
                         <div class="transfer-row">
-                            <div class="transfer-category-dot" style="background-color: ${fromColor};"></div>
-                            <div class="transfer-path">${fromStr}</div>
+                            <div class="transfer-category-dot" style="background-color: ${escapeHtml(fromColor)};"></div>
+                            <div class="transfer-path">${escapeHtml(fromStr)}</div>
                         </div>
                         <div class="transfer-row">
-                            <div class="transfer-category-dot" style="background-color: ${toColor};"></div>
-                            <div class="transfer-path">${toStr}</div>
+                            <div class="transfer-category-dot" style="background-color: ${escapeHtml(toColor)};"></div>
+                            <div class="transfer-path">${escapeHtml(toStr)}</div>
                         </div>
                     </div>
                     <div class="transfer-amount move">${formatMoney(t.amount)}</div>
@@ -2716,8 +2793,8 @@ function renderTransfers(allTransfersData, portfolioData) {
             <div class="transfer-item">
                 <div class="transfer-content">
                     <div class="transfer-row">
-                        <div class="transfer-category-dot" style="background-color: ${categoryColor};"></div>
-                        <div class="transfer-path">${pathDisplay}</div>
+                        <div class="transfer-category-dot" style="background-color: ${escapeHtml(categoryColor)};"></div>
+                        <div class="transfer-path">${escapeHtml(pathDisplay)}</div>
                     </div>
                 </div>
                 <div class="transfer-amount ${amountClass}">${amountPrefix}${formatMoney(t.amount)}</div>
@@ -2727,7 +2804,7 @@ function renderTransfers(allTransfersData, portfolioData) {
 
     // Render each date group
     const html = allTransfersData.map(group => {
-        const dateHeader = `<div class="transfers-date-header">${group.date}</div>`;
+        const dateHeader = `<div class="transfers-date-header">${escapeHtml(group.date)}</div>`;
         const items = group.transfers.map(t => renderTransferItem(t)).join('');
         return dateHeader + items;
     }).join('');
@@ -2776,8 +2853,9 @@ function initSettingsUI() {
     const updateUIState = (source) => {
         currentSource = source;
         toggles.forEach(t => {
-            if (t.dataset.source === source) t.classList.add('active');
-            else t.classList.remove('active');
+            const active = t.dataset.source === source;
+            t.classList.toggle('active', active);
+            t.setAttribute('aria-selected', active ? 'true' : 'false');
         });
 
         if (source === 'remote') {
@@ -2785,6 +2863,11 @@ function initSettingsUI() {
         } else {
             remoteFields.classList.remove('visible');
         }
+    };
+
+    let lastFocusedBeforeModal = null;
+    const onEscClose = (e) => {
+        if (e.key === 'Escape') closeModal();
     };
 
     // Open Modal
@@ -2799,13 +2882,28 @@ function initSettingsUI() {
 
         authStatus.style.display = 'none';
         modal.style.display = 'flex';
+
+        lastFocusedBeforeModal = document.activeElement;
+        document.addEventListener('keydown', onEscClose);
+        // Focus the first toggle so keyboard users land inside the modal
+        const firstFocusable = modal.querySelector('.source-toggle-option.active') || btnCancel;
+        firstFocusable?.focus();
     });
 
     // Close Modal
     const closeModal = () => {
         modal.style.display = 'none';
+        document.removeEventListener('keydown', onEscClose);
+        if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === 'function') {
+            lastFocusedBeforeModal.focus();
+        }
     };
     btnCancel.addEventListener('click', closeModal);
+
+    // Click on the dark overlay (outside .modal-content) closes the modal
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
 
     // Toggle Source
     toggles.forEach(t => {
@@ -2909,12 +3007,26 @@ function resetCardInlineStyles() {
 // Perform a month switch with slide-out → render → slide-in animation.
 // direction: 'next' (new month ahead) → card exits left, new enters from right;
 // direction: 'prev' (new month before) → card exits right, new enters from left.
+function prefersReducedMotion() {
+    return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 async function animateMonthTransition(nextId, direction, currentDx = 0) {
     if (!nextId || nextId === currentMonthId) {
         snapCardBack();
         return;
     }
     isMonthAnimating = true;
+
+    // Skip the slide animation entirely if the user prefers reduced motion.
+    if (prefersReducedMotion()) {
+        resetCardInlineStyles();
+        const selector = document.getElementById('monthSelector');
+        if (selector) selector.value = nextId;
+        await loadMonth(nextId);
+        isMonthAnimating = false;
+        return;
+    }
 
     const dir = direction === 'next' ? -1 : 1; // sign for exit translation
     const exitX = `${dir * (window.innerWidth + 60)}px`;
