@@ -56,7 +56,7 @@ const ETF_REGION = {
     VTV: 'us', IWD: 'us', SCHV: 'us',
     VYM: 'us', SCHD: 'us', DGRO: 'us', HDV: 'us',
     IWM: 'us', VB: 'us', IJR: 'us', VO: 'us', IJH: 'us', SCHM: 'us',
-    XLK: 'us', VGT: 'us', SOXX: 'us', SMH: 'us', PPA: 'us',
+    XLK: 'us', VGT: 'us', SOXX: 'us', SMH: 'us', PPA: 'us', SPMO: 'us',
     // Global (merged into us)
     VT: 'us', ACWI: 'us', VEA: 'us', IEFA: 'us', VWO: 'us', IEMG: 'us', EEM: 'us',
     CSPX: 'us', SXR8: 'us', SWDA: 'us', IWDA: 'us', EUNL: 'us', EIMI: 'us', VWCE: 'us',
@@ -2308,8 +2308,9 @@ function renderPerformanceChart(stats) {
         return oa - ob;
     });
 
-    // Default-hidden categories (low-volatility noise)
-    const DEFAULT_HIDDEN_CATS = new Set(['usd', 'safe']);
+    // Default-hidden categories (low-volatility noise). Stocks is hidden in favor
+    // of the Companies sub-bucket which is more informative.
+    const DEFAULT_HIDDEN_CATS = new Set(['usd', 'safe', 'stocks']);
 
     // Stocks sub-buckets share the purple family of the parent stocks category but
     // step through shades from dark → light so they can be visually compared.
@@ -2355,7 +2356,7 @@ function renderPerformanceChart(stats) {
                     pointRadius: 2,
                     tension: 0.25,
                     spanGaps: true,
-                    hidden: true // off by default; user enables via legend
+                    hidden: def.key !== 'stocks_companies' // Companies on by default; other sub-buckets off
                 });
             });
         }
