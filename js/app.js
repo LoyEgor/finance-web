@@ -1199,42 +1199,71 @@ window.toggleDelta = function (e, btn) {
 // ===========================================
 // SHOW CALCULATION TOOLTIP
 // ===========================================
+// Singleton tooltip with toggle semantics:
+//  - Click anchor → open; click same anchor again → close (toggle).
+//  - Click anywhere else (including other clickables that stopPropagation in
+//    their onclick) → close. Achieved via a capture-phase document listener
+//    so it runs before other handlers can swallow the event.
+//  - Click inside the tooltip itself → keep open (so users can copy text).
+//  - Scroll → close.
+let activeCalcAnchor = null;
+let activeCalcTooltip = null;
+
+function closeCalcTooltip() {
+    if (activeCalcTooltip) {
+        activeCalcTooltip.remove();
+        activeCalcTooltip = null;
+    }
+    activeCalcAnchor = null;
+}
+
+// One-time wiring — outside click and scroll handlers live for the lifetime of
+// the page; they no-op when nothing is open.
+function setupCalcTooltipDismiss() {
+    document.addEventListener('click', (event) => {
+        if (!activeCalcAnchor) return;
+        // Click inside the tooltip → ignore.
+        if (activeCalcTooltip && activeCalcTooltip.contains(event.target)) return;
+        // Click on the active anchor itself → let its onclick run the toggle.
+        if (activeCalcAnchor.contains(event.target)) return;
+        // Anything else → close, then let the other element's onclick run.
+        closeCalcTooltip();
+    }, true);  // capture phase so stopPropagation in other onclicks can't hide the event from us
+
+    window.addEventListener('scroll', () => {
+        if (activeCalcAnchor) closeCalcTooltip();
+    }, { passive: true });
+}
+
 window.showCalcTooltip = function (e, el) {
     e.preventDefault();
     e.stopPropagation();
 
-    // Remove any existing tooltip
-    const existing = document.getElementById('calc-tooltip');
-    if (existing) existing.remove();
+    // Toggle: clicking the same anchor a second time just closes.
+    if (activeCalcAnchor === el) {
+        closeCalcTooltip();
+        return;
+    }
+    // Close any other currently-open tooltip before opening this one.
+    closeCalcTooltip();
 
     const calcText = decodeURIComponent(el.getAttribute('data-calc'));
-
-    // Create tooltip element
     const tooltip = document.createElement('div');
     tooltip.id = 'calc-tooltip';
     tooltip.textContent = calcText;
-
     document.body.appendChild(tooltip);
 
-    // Position tooltip
+    // Position
     const rect = el.getBoundingClientRect();
     tooltip.style.top = (rect.bottom + 8) + 'px';
     tooltip.style.left = rect.left + 'px';
-
-    // Adjust if overflows right edge
     const tooltipRect = tooltip.getBoundingClientRect();
     if (tooltipRect.right > window.innerWidth - 8) {
         tooltip.style.left = (window.innerWidth - tooltipRect.width - 8) + 'px';
     }
 
-    // Close on click outside
-    const closeHandler = (event) => {
-        if (!tooltip.contains(event.target) && event.target !== el) {
-            tooltip.remove();
-            document.removeEventListener('click', closeHandler);
-        }
-    };
-    setTimeout(() => document.addEventListener('click', closeHandler), 10);
+    activeCalcAnchor = el;
+    activeCalcTooltip = tooltip;
 };
 
 // ===========================================
@@ -1372,6 +1401,17 @@ function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth 
 function annotateTransfers(portfolioData, transfers) {
     if (!transfers || transfers.length === 0) return;
     if (!portfolioData || !portfolioData.portfolio) return;
+
+    // Reset previous annotations: assets live in dataService._cache, so the
+    // same object is returned every time we revisit the month. Without this
+    // wipe, adjustmentHistory accumulates one copy of every transfer per visit.
+    portfolioData.portfolio.forEach(cat => {
+        cat.items.forEach(item => {
+            item.adjustmentHistory = [];
+            item.adjustment = 0;
+            item.isVirtual = false;
+        });
+    });
 
     transfers.forEach(t => {
         if (t.type === 'deposit') {
@@ -3365,6 +3405,7 @@ async function init() {
     setupMonthArrows();
     setupPerfChartTooltipDismiss();
     setupAccordionStateTracking();
+    setupCalcTooltipDismiss();
 }
 
 // Start the app
