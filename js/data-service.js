@@ -19,6 +19,10 @@ class DataService {
 
         this._inflight = new Map(); // dedupe concurrent fetches for the same key
 
+        // Cached directory listing (Set of filenames). null = "unknown, fall back to probing".
+        this._dirListing = null;
+        this._dirListingInflight = null;
+
         this.loadConfig();
     }
 
@@ -33,6 +37,43 @@ class DataService {
     clearCache() {
         this._cache.clear();
         this._inflight.clear();
+        this._dirListing = null;
+        this._dirListingInflight = null;
+    }
+
+    // Lists all filenames in the data directory. Returns Set<string> for remote
+    // (so callers can skip 404-probing) or null for local (fall back to per-file fetches).
+    async listDataFilenames() {
+        if (!this.isRemote() || !this.isConfigured()) return null;
+        if (this._dirListing) return this._dirListing;
+        if (this._dirListingInflight) return this._dirListingInflight;
+
+        this._dirListingInflight = (async () => {
+            try {
+                const files = await this._listRemoteFiles();
+                this._dirListing = new Set(files.map(f => f.name));
+                return this._dirListing;
+            } catch (e) {
+                return null;
+            } finally {
+                this._dirListingInflight = null;
+            }
+        })();
+        return this._dirListingInflight;
+    }
+
+    async _listRemoteFiles() {
+        const dirPath = this.config.path || '';
+        const apiUrl = `https://api.github.com/repos/${this.config.owner}/${this.config.repo}/contents/${dirPath}?ref=${this.config.branch}`;
+        const response = await fetch(apiUrl, {
+            headers: {
+                'Authorization': `token ${this.config.githubToken}`,
+                'Accept': 'application/vnd.github.v3+json'
+            }
+        });
+        if (!response.ok) throw new Error('Failed to list directory');
+        const files = await response.json();
+        return Array.isArray(files) ? files : [];
     }
 
     // ===========================================
@@ -234,53 +275,28 @@ class DataService {
     }
 
     async _getAvailableMonthsRemote() {
-        try {
-            // List contents of the data directory
-            const dirPath = this.config.path || '';
-            const apiUrl = `https://api.github.com/repos/${this.config.owner}/${this.config.repo}/contents/${dirPath}?ref=${this.config.branch}`;
+        const filenames = await this.listDataFilenames();
+        if (!filenames) return [];
 
-            const response = await fetch(apiUrl, {
-                headers: {
-                    'Authorization': `token ${this.config.githubToken}`,
-                    'Accept': 'application/vnd.github.v3+json'
-                }
-            });
+        const monthRegex = /^(\d{4})-(\d{2})\.json$/;
+        const available = [];
+        filenames.forEach(name => {
+            const match = name.match(monthRegex);
+            if (!match) return;
 
-            if (!response.ok) throw new Error('Failed to list directory');
+            const id = name.replace('.json', '');
+            const year = parseInt(match[1]);
+            const monthIndex = parseInt(match[2]) - 1;
 
-            const files = await response.json();
-            if (!Array.isArray(files)) return [];
+            const monthName = (typeof MONTH_NAMES !== 'undefined')
+                ? MONTH_NAMES[monthIndex]
+                : new Date(year, monthIndex).toLocaleString('ru-RU', { month: 'long' });
 
-            // Filter for YYYY-MM.json files
-            const monthRegex = /^(\d{4})-(\d{2})\.json$/;
+            const label = `${monthName.charAt(0).toUpperCase() + monthName.slice(1)} ${year}`;
+            available.push({ id, label });
+        });
 
-            const available = [];
-            files.forEach(file => {
-                const match = file.name.match(monthRegex);
-                if (match) {
-                    const id = file.name.replace('.json', '');
-                    const year = parseInt(match[1]);
-                    const monthIndex = parseInt(match[2]) - 1; // 0-based
-
-                    // Utilize the global MONTH_NAMES if available, or simplified fallback
-                    const monthName = (typeof MONTH_NAMES !== 'undefined')
-                        ? MONTH_NAMES[monthIndex]
-                        : new Date(year, monthIndex).toLocaleString('ru-RU', { month: 'long' });
-
-                    // Capitalize first letter
-                    const label = `${monthName.charAt(0).toUpperCase() + monthName.slice(1)} ${year}`;
-
-                    available.push({ id, label });
-                }
-            });
-
-            // Sort by ID
-            return available.sort((a, b) => a.id.localeCompare(b.id));
-
-        } catch (e) {
-            console.error('Remote listing failed', e);
-            throw e;
-        }
+        return available.sort((a, b) => a.id.localeCompare(b.id));
     }
 
     async testConnection() {

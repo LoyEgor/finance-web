@@ -29,11 +29,9 @@ let enabledTableBuckets = null;
 let currentMonthId = null;
 let availableMonths = [];
 let currentPortfolioData = null;
-let currentTransfersData = [];
 let currentSnapshot = null;
 let previousSnapshot = null;
 let currentComparison = null;
-let yieldHistory = []; // Array of monthly yield percentages for forecasting
 let globalCategories = {}; // Unified Category Definitions
 
 // Source colors for chart (derived from badge palette)
@@ -540,10 +538,8 @@ async function fetchYearSequence(currentMonthId) {
     return results.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-// 2. Modified Dietz Yield (Isolated Month)
-// Yield = (End - Start - NetFlow) / (Start + NetFlow/2)
-// 2. Simple Yield (Profit / Invested Capital)
-// User Formula: Yield = (End - (Start + Deposits - Withdraws)) / (Start + Deposits)
+// Simple Yield: profit relative to invested capital.
+// Yield = (End - (Start + Deposits - Withdraws)) / (Start + Deposits)
 function calculateSimpleYield(startBalance, endBalance, transfers) {
     let deposits = 0;
     let withdraws = 0;
@@ -1100,8 +1096,6 @@ function generateCandidateMonths() {
     return months;
 }
 
-// checkFileExists removed (logic moved to DataService)
-
 // ===========================================
 // GET AVAILABLE MONTHS (VIA DATA SERVICE)
 // ===========================================
@@ -1338,78 +1332,6 @@ function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth 
 }
 
 // ===========================================
-// UPDATE FORECAST UI
-// ===========================================
-// (Old forecast logic removed)
-
-// ===========================================
-// MERGE TRANSFERS INTO PORTFOLIO (VIRTUAL BALANCE)
-// ===========================================
-function mergeTransfers(portfolioData, transfers) {
-    if (!transfers || transfers.length === 0) return portfolioData;
-    if (!portfolioData || !portfolioData.portfolio) return portfolioData;
-
-    transfers.forEach(t => {
-        if (t.type === 'deposit') {
-            applyTransferOperation(portfolioData, t.category, t.source, t.name, t.amount);
-        } else if (t.type === 'withdraw') {
-            applyTransferOperation(portfolioData, t.category, t.source, t.name, -t.amount);
-        } else if (t.type === 'move') {
-            applyTransferOperation(portfolioData, t.from_category, t.from_source, t.from_name, -t.amount);
-            applyTransferOperation(portfolioData, t.to_category, t.to_source, t.to_name, t.amount);
-        }
-    });
-
-    return portfolioData;
-}
-
-function applyTransferOperation(portfolioData, categoryId, source, assetName, amount) {
-    // Find category by id (strict match)
-    let category = portfolioData.portfolio.find(c => c.id === categoryId);
-
-    if (!category) {
-        // Create new category if not found
-        category = {
-            id: categoryId,
-            title: categoryId, // Will show as-is if new
-            color: '#cbd5e0', // Default GRAY
-            items: []
-        };
-        portfolioData.portfolio.push(category);
-    }
-
-    // Find asset by name + source (strict match)
-    let asset = category.items.find(i => i.name === assetName && i.source === source);
-
-    if (!asset) {
-        asset = {
-            name: assetName,
-            source: source,
-            val: 0
-        };
-        category.items.push(asset);
-    }
-
-    // Store original value before first adjustment
-    if (asset.originalVal === undefined) {
-        asset.originalVal = asset.val;
-    }
-
-    // Track adjustment history for tooltip
-    if (!asset.adjustmentHistory) {
-        asset.adjustmentHistory = [];
-    }
-    asset.adjustmentHistory.push(amount);
-
-    // Apply adjustment
-    asset.val += amount;
-
-    // Mark as virtual
-    asset.isVirtual = true;
-    asset.adjustment = (asset.adjustment || 0) + amount;
-}
-
-// ===========================================
 // ANNOTATE TRANSFERS ON PORTFOLIO (NO VALUE CHANGE)
 // ===========================================
 function annotateTransfers(portfolioData, transfers) {
@@ -1508,15 +1430,6 @@ function updatePerformanceUI(performance, isFirstMonth, hasTransfers) {
         netFlowEl.classList.add('perf-negative');
     }
 
-    if (isFirstMonth) {
-        // Zero Kilometer: Show 0 PnL, don't hide
-        // Ensure standard display logic runs below
-    }
-
-    // Show PnL tab for all months (including first)
-    if (pnlTab) pnlTab.style.display = '';
-
-    // Show PnL tab for non-first months
     if (pnlTab) pnlTab.style.display = '';
 
     // PnL with tooltip
@@ -1557,39 +1470,38 @@ async function fetchBenchmarks() {
 // Fetch ALL transfer files for a specific month
 // Tries: transfers-YYYY-MM.json and transfers-YYYY-MM-DD.json for days 01-31
 async function fetchTransfersForMonth(monthId) {
-    const allTransfers = [];
-
-    // Generate all possible filenames for this month
-    const filenames = [`transfers-${monthId}.json`];
-
-    // Add day-specific files (01-31)
-    for (let day = 1; day <= 31; day++) {
-        const dayStr = String(day).padStart(2, '0');
-        filenames.push(`transfers-${monthId}-${dayStr}.json`);
+    // Prefer a directory listing when available (remote mode) so we only fetch files
+    // that actually exist. For local mode the listing is null and we fall back to
+    // probing every possible daily filename — wasteful but cached after first miss.
+    const knownFiles = await dataService.listDataFilenames();
+    let filenames;
+    if (knownFiles) {
+        const prefix = `transfers-${monthId}`;
+        filenames = [];
+        knownFiles.forEach(name => {
+            if (name === `${prefix}.json` || name.startsWith(`${prefix}-`)) {
+                filenames.push(name);
+            }
+        });
+    } else {
+        filenames = [`transfers-${monthId}.json`];
+        for (let day = 1; day <= 31; day++) {
+            const dayStr = String(day).padStart(2, '0');
+            filenames.push(`transfers-${monthId}-${dayStr}.json`);
+        }
     }
 
-    // Fetch all in parallel
-    const promises = filenames.map(async (filename) => {
+    const results = await Promise.all(filenames.map(async (filename) => {
         const data = await fetchTransfersData(filename);
         if (data && data.transfers && data.transfers.length > 0) {
-            return {
-                date: data.meta?.date || monthId,
-                transfers: data.transfers
-            };
+            return { date: data.meta?.date || monthId, transfers: data.transfers };
         }
         return null;
-    });
+    }));
 
-    const results = await Promise.all(promises);
-
-    // Combine and sort by date (oldest first)
-    results.forEach(r => {
-        if (r) allTransfers.push(r);
-    });
-
-    allTransfers.sort((a, b) => a.date.localeCompare(b.date));
-
-    return allTransfers;
+    return results
+        .filter(r => r)
+        .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // ===========================================
@@ -1624,9 +1536,7 @@ async function loadMonth(monthId) {
             prevMonthId ? fetchTransfersForMonth(prevMonthId) : Promise.resolve([])
         ]);
 
-        // Flatten all transfers
         const flatTransfers = monthTransfers.flatMap(g => g.transfers);
-        const prevFlatTransfers = prevMonthTransfers.flatMap(g => g.transfers);
 
         // Check if current month data exists
         if (!currentData) {
@@ -1643,7 +1553,6 @@ async function loadMonth(monthId) {
 
         // Store current data globally
         currentPortfolioData = currentData;
-        currentTransfersData = flatTransfers;
 
         // --- DATE-BASED TRANSFER FILTERING ---
         // Transfers belong to the period between two snapshots based on their meta.date.
@@ -1846,7 +1755,7 @@ function renderPortfolio(data, comparison = null) {
     // Generate category list HTML
     categories.forEach((cat, index) => {
         const percent = ((cat.total / grandTotal) * 100).toFixed(2) + '%';
-        const money = cat.total.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
+        const money = formatMoney(cat.total);
 
         // Category delta badge
         const catComparison = comparison?.categories?.[cat.id];
@@ -1872,7 +1781,7 @@ function renderPortfolio(data, comparison = null) {
             // Delta badge
             const deltaBadge = formatDeltaBadge(assetComp);
 
-            let displayVal = item.val.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
+            let displayVal = formatMoney(item.val);
 
             if (item.isVirtual) {
                 // Build transfer breakdown for tooltip
@@ -1939,7 +1848,7 @@ function renderPortfolio(data, comparison = null) {
 
                 // Subgroup total
                 const sgTotal = items.reduce((s, i) => s + i.val, 0);
-                const sgMoney = sgTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
+                const sgMoney = formatMoney(sgTotal);
 
                 // Relative percentage: ETF regions use regionBase, companies use stocksTotal
                 let sgPct;
@@ -2148,7 +2057,7 @@ function renderChart() {
     }
 
     // Grand total string for center
-    const grandTotalStr = grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' $';
+    const grandTotalStr = formatMoney(grandTotal);
 
     const centerTextPlugin = {
         id: 'centerText',
@@ -2694,8 +2603,6 @@ function showError(message) {
     const listContainer = document.getElementById('portfolio-list');
     listContainer.innerHTML = `<div class="error">${message}</div>`;
 }
-
-// (Modal functionality removed - using static files only)
 
 // ===========================================
 // TAB SWITCHING
