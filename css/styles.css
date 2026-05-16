@@ -44,6 +44,16 @@
 
     /* Focus ring (used by :focus-visible across interactive elements) */
     --color-focus-ring:     rgba(66, 153, 225, 0.4);
+
+    /* Source / exchange brand colours — single source of truth for both badges
+       and donut-chart segments. Same values used in both themes (brand identity
+       doesn't change), and the JS chart reads them at render time. */
+    --source-binance: #f3ba2f;
+    --source-bybit:   #17181e;
+    --source-ibkr:    #7c0800;
+    --source-okx:     #555555;
+    --source-bingx:   #0044cc;
+    --source-cash:    #48bb78;  /* matches the Cash category green (categories.json#usd) */
 }
 
 /* Dark theme — applied either via OS preference OR explicit data-theme="dark"
@@ -296,25 +306,28 @@ tr:last-child td {
 }
 
 .b-binance {
-    background: #f3ba2f;
+    background: var(--source-binance);
     color: #000;
 }
 
 .b-bybit {
-    background: #17181e;
+    background: var(--source-bybit);
 }
 
 .b-ibkr {
-    background: #7c0800;
+    background: var(--source-ibkr);
 }
 
 .b-okx {
-    background: #000;
-    border: 1px solid #333;
+    background: var(--source-okx);
 }
 
 .b-bingx {
-    background: #0044cc;
+    background: var(--source-bingx);
+}
+
+.b-cash {
+    background: var(--source-cash);
 }
 
 /* ===========================================
@@ -346,6 +359,12 @@ tr:last-child td {
 
 .toggle-btn:active {
     transform: scale(0.95);
+}
+
+/* Money mode (toggled via JS setting data-mode); subtly stronger background
+   so the change is visible. Themed via vars so it follows light/dark. */
+.toggle-btn[data-mode="money"] {
+    background: var(--color-border);
 }
 
 /* ===========================================

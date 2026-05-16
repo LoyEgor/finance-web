@@ -34,14 +34,23 @@ let previousSnapshot = null;
 let currentComparison = null;
 let globalCategories = {}; // Unified Category Definitions
 
-// Source colors for chart (derived from badge palette)
-const SOURCE_COLORS = {
-    'Binance': '#f3ba2f',
-    'Bybit': '#17181e',
-    'IBKR': '#7c0800',
-    'OKX': '#555555',
-    'BingX': '#0044cc'
-};
+// Cross-month context preservation (session only).
+// openCategoryIds tracks which <details> the user has expanded so they stay
+// expanded after a swipe / arrow navigation. pendingScrollAnchor remembers
+// which category was at viewport top + intra-category offset, so the same
+// category lands at the same position in the new month's render.
+const openCategoryIds = new Set();
+let pendingScrollAnchor = null; // { catId, offset } | null
+
+// Source colours come from CSS custom properties (--source-binance, etc.) so
+// the donut chart segments and the badge backgrounds stay in sync — changing
+// the value in styles.css updates both.
+function getSourceColor(source) {
+    if (!source) return null;
+    const key = '--source-' + source.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const val = getComputedStyle(document.documentElement).getPropertyValue(key).trim();
+    return val || null;
+}
 
 // ===========================================
 // ETF CLASSIFICATION (UI-only subgrouping for stocks)
@@ -1147,16 +1156,12 @@ window.toggleValue = function (e, btn) {
     e.stopPropagation();
 
     const currentMode = btn.getAttribute('data-mode');
+    const newMode = currentMode === 'percent' ? 'money' : 'percent';
 
-    if (currentMode === 'percent') {
-        btn.innerText = btn.getAttribute('data-money');
-        btn.setAttribute('data-mode', 'money');
-        btn.style.backgroundColor = '#e2e8f0';
-    } else {
-        btn.innerText = btn.getAttribute('data-pct');
-        btn.setAttribute('data-mode', 'percent');
-        btn.style.backgroundColor = '#edf2f7';
-    }
+    btn.setAttribute('data-mode', newMode);
+    btn.innerText = btn.getAttribute(newMode === 'money' ? 'data-money' : 'data-pct');
+    // Background colour is driven from CSS via the data-mode attribute selector
+    // so it follows the theme palette automatically.
 };
 
 // ===========================================
@@ -1793,6 +1798,8 @@ function renderPortfolio(data, comparison = null) {
 
         const section = document.createElement('div');
         section.className = 'category-block';
+        section.dataset.catId = cat.id;
+        const detailsOpenAttr = openCategoryIds.has(cat.id) ? ' open' : '';
 
         // Helper to render a single item row
         function renderItemRow(item) {
@@ -1925,7 +1932,7 @@ function renderPortfolio(data, comparison = null) {
         }
 
         section.innerHTML = `
-            <details>
+            <details${detailsOpenAttr}>
                 <summary>
                     <div class="header-title">
                         <span class="color-dot" style="background-color: ${escapeHtml(cat.color)};"></span>
@@ -1952,6 +1959,11 @@ function renderPortfolio(data, comparison = null) {
         `;
         listContainer.appendChild(section);
     });
+
+    // Re-apply scroll anchor captured before the month nav. Runs synchronously
+    // after the new sections are in the DOM, so the slide-in animation starts
+    // from the correct scroll position with no visible jump.
+    restoreScrollAnchor();
 
     // Store chart data globally for re-rendering on toggle
     lastChartData = { categories, grandTotal };
@@ -2009,7 +2021,7 @@ function renderChart() {
             chartLabels.push(src);
             chartSegmentNames.push(src);
             chartValues.push(data.total);
-            chartColors.push(SOURCE_COLORS[src] || defaultColors[i % defaultColors.length]);
+            chartColors.push(getSourceColor(src) || defaultColors[i % defaultColors.length]);
 
             // Calculate delta of share percentage
             const prevGrandTotal = Object.values(sourceMap).reduce((s, d) => s + d.prevTotal, 0);
@@ -2881,8 +2893,8 @@ function initSettingsUI() {
     btnOpen.addEventListener('click', () => {
         // Load current config into fields
         inputToken.value = dataService.config.githubToken || '';
-        inputOwner.value = dataService.config.owner || '';
-        inputRepo.value = dataService.config.repo || '';
+        inputOwner.value = dataService.config.owner || 'loyegor';
+        inputRepo.value = dataService.config.repo || 'finances';
         inputBranch.value = dataService.config.branch || 'main';
         inputPath.value = dataService.config.path || 'data';
         updateUIState(dataService.config.sourceType);
@@ -3018,11 +3030,81 @@ function prefersReducedMotion() {
     return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+// Document-relative top of an element (sum of offsetTop up the offsetParent
+// chain). Independent of current scroll position and CSS transforms — both
+// matter here because renderPortfolio clears innerHTML mid-transition (which
+// can momentarily clamp scrollY) and the card is mid-slide-animation.
+function getDocumentTop(el) {
+    let top = 0;
+    while (el) {
+        top += el.offsetTop;
+        el = el.offsetParent;
+    }
+    return top;
+}
+
+// Snapshot which category is at the top of the viewport so we can restore the
+// same vertical context after the new month renders. Called at the very start
+// of a month transition (swipe / arrows / selector). If nothing is visible
+// (e.g. user is above the portfolio list), clears the anchor so the new month
+// renders at top.
+function captureScrollAnchor() {
+    const cards = document.querySelectorAll('#portfolio-list .category-block[data-cat-id]');
+    if (!cards.length) {
+        pendingScrollAnchor = null;
+        return;
+    }
+    const scrollTop = window.scrollY || window.pageYOffset || 0;
+    let best = null;
+    cards.forEach(el => {
+        const top = getDocumentTop(el);
+        const distance = Math.abs(top - scrollTop);
+        if (best === null || distance < best.distance) {
+            best = { catId: el.dataset.catId, top, distance };
+        }
+    });
+    pendingScrollAnchor = best
+        ? { catId: best.catId, offset: scrollTop - best.top }
+        : null;
+}
+
+function restoreScrollAnchor() {
+    if (!pendingScrollAnchor) return;
+    const target = document.querySelector(
+        `#portfolio-list .category-block[data-cat-id="${pendingScrollAnchor.catId}"]`
+    );
+    if (target) {
+        const newTop = getDocumentTop(target);
+        // Positional scrollTo(x, y) is synchronous and universally supported;
+        // the object form with behavior:'instant' is flakey on older mobile Safari.
+        window.scrollTo(0, Math.max(0, newTop + pendingScrollAnchor.offset));
+    }
+    pendingScrollAnchor = null;
+}
+
+// Track <details> open/close in a Set so the same accordions reopen on next
+// render. `toggle` doesn't bubble, so attach in capture phase on the container.
+function setupAccordionStateTracking() {
+    const listContainer = document.getElementById('portfolio-list');
+    if (!listContainer) return;
+    listContainer.addEventListener('toggle', (e) => {
+        const details = e.target;
+        if (!details || details.tagName !== 'DETAILS') return;
+        const block = details.closest('.category-block[data-cat-id]');
+        if (!block) return;
+        const catId = block.dataset.catId;
+        if (details.open) openCategoryIds.add(catId);
+        else openCategoryIds.delete(catId);
+    }, true);
+}
+
 async function animateMonthTransition(nextId, direction, currentDx = 0) {
     if (!nextId || nextId === currentMonthId) {
         snapCardBack();
         return;
     }
+    // Capture only when we know we're actually navigating to a different month.
+    captureScrollAnchor();
     isMonthAnimating = true;
 
     // Skip the slide animation entirely if the user prefers reduced motion.
@@ -3278,6 +3360,7 @@ async function init() {
     setupSwipeNavigation();
     setupMonthArrows();
     setupPerfChartTooltipDismiss();
+    setupAccordionStateTracking();
 }
 
 // Start the app
