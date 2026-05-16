@@ -4,15 +4,20 @@
 
 /* Centralised palette. Add new colours here instead of inlining hex values
    so theming / contrast tweaks happen in one place. Brand and chart-segment
-   colours live in JS (SOURCE_COLORS) and are intentionally not duplicated. */
+   colours live in JS (SOURCE_COLORS) and are intentionally not duplicated.
+   Dark-mode overrides below mirror this block; keep them in sync. */
 :root {
     /* Surfaces & borders (slate family) */
     --color-bg-page:      #f7fafc;
     --color-bg-hover:     #edf2f7;
+    --color-surface:      #ffffff;  /* cards / sheets / dropdowns */
+    --color-control-recessed: #edf2f7;  /* segmented-control track — sits "below" surface */
     --color-border:       #e2e8f0;
     --color-border-hover: #cbd5e0;
+    --color-divider:      #f1f5f9;  /* hairline separators inside cards */
 
     /* Text */
+    --color-text-heading: #1a202c;
     --color-text:         #2d3748;
     --color-text-muted:   #4a5568;
     --color-text-subtle:  #718096;
@@ -22,6 +27,95 @@
     --color-positive: #22c55e;
     --color-negative: #ef4444;
     --color-accent:   #4299e1;
+    --color-primary:        #3182ce;  /* primary CTAs (Save button etc.) */
+    --color-primary-hover:  #4299e1;
+
+    /* Semantic surfaces (subtle backgrounds for info/success/error blocks) */
+    --color-success-bg:     #f0fff4;
+    --color-success-border: #c6f6d5;
+    --color-error-bg:       #fff5f5;
+    --color-error-border:   #feb2b2;
+    --color-info-bg:        #ebf8ff;
+
+    /* Elevation */
+    --color-shadow:         rgba(0, 0, 0, 0.05);
+    --color-shadow-elevated:rgba(0, 0, 0, 0.1);
+    --color-shadow-modal:   rgba(0, 0, 0, 0.3);
+
+    /* Focus ring (used by :focus-visible across interactive elements) */
+    --color-focus-ring:     rgba(66, 153, 225, 0.4);
+}
+
+/* Dark theme — applied either via OS preference OR explicit data-theme="dark"
+   set by the manual theme toggle. Keep these two selector lists in sync. */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --color-bg-page:      #0f172a;  /* slate-900 — softer than OLED black */
+        --color-bg-hover:     #334155;  /* slate-700 — hover ↑ surface */
+        --color-surface:      #1e293b;  /* slate-800 — cards */
+        --color-control-recessed: #0f172a;  /* match page; segment track ↓ surface */
+        --color-border:       #334155;
+        --color-border-hover: #475569;  /* slate-600 */
+        --color-divider:      #334155;
+
+        --color-text-heading: #f8fafc;
+        --color-text:         #e2e8f0;
+        --color-text-muted:   #cbd5e1;
+        --color-text-subtle:  #94a3b8;
+        --color-text-placeholder: #64748b;
+
+        --color-positive: #4ade80;  /* lighter green — better contrast on dark */
+        --color-negative: #f87171;  /* lighter red */
+        --color-accent:   #60a5fa;
+        --color-primary:        #3b82f6;
+        --color-primary-hover:  #60a5fa;
+
+        --color-success-bg:     rgba(34, 197, 94, 0.12);
+        --color-success-border: rgba(34, 197, 94, 0.35);
+        --color-error-bg:       rgba(239, 68, 68, 0.12);
+        --color-error-border:   rgba(239, 68, 68, 0.35);
+        --color-info-bg:        rgba(96, 165, 250, 0.12);
+
+        --color-shadow:          rgba(0, 0, 0, 0.25);
+        --color-shadow-elevated: rgba(0, 0, 0, 0.35);
+        --color-shadow-modal:    rgba(0, 0, 0, 0.45);
+
+        --color-focus-ring:      rgba(96, 165, 250, 0.5);
+    }
+}
+/* Manual override — set by the theme toggle button (no localStorage; session only). */
+:root[data-theme="dark"] {
+    --color-bg-page:      #0f172a;
+    --color-bg-hover:     #334155;
+    --color-surface:      #1e293b;
+    --color-control-recessed: #0f172a;
+    --color-border:       #334155;
+    --color-border-hover: #475569;
+    --color-divider:      #334155;
+
+    --color-text-heading: #f8fafc;
+    --color-text:         #e2e8f0;
+    --color-text-muted:   #cbd5e1;
+    --color-text-subtle:  #94a3b8;
+    --color-text-placeholder: #64748b;
+
+    --color-positive: #4ade80;
+    --color-negative: #f87171;
+    --color-accent:   #60a5fa;
+    --color-primary:        #3b82f6;
+    --color-primary-hover:  #60a5fa;
+
+    --color-success-bg:     rgba(34, 197, 94, 0.12);
+    --color-success-border: rgba(34, 197, 94, 0.35);
+    --color-error-bg:       rgba(239, 68, 68, 0.12);
+    --color-error-border:   rgba(239, 68, 68, 0.35);
+    --color-info-bg:        rgba(96, 165, 250, 0.12);
+
+    --color-shadow:          rgba(0, 0, 0, 0.25);
+    --color-shadow-elevated: rgba(0, 0, 0, 0.35);
+    --color-shadow-modal:    rgba(0, 0, 0, 0.45);
+
+    --color-focus-ring:      rgba(96, 165, 250, 0.5);
 }
 
 /* Base */
@@ -39,17 +133,17 @@ body {
 h2 {
     text-align: center;
     margin-bottom: 20px;
-    color: #1a202c;
+    color: var(--color-text-heading);
 }
 
 /* ===========================================
    Chart Container
    =========================================== */
 .chart-container {
-    background: white;
+    background: var(--color-surface);
     padding: 20px;
     border-radius: 16px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 4px 6px var(--color-shadow);
     margin-bottom: 25px;
     position: relative;
     display: flex;
@@ -59,7 +153,7 @@ h2 {
 
 .chart-toggle-group {
     display: flex;
-    background: var(--color-bg-hover);
+    background: var(--color-control-recessed);
     padding: 3px;
     border-radius: 8px;
     margin-bottom: 10px;
@@ -78,9 +172,9 @@ h2 {
 }
 
 .chart-toggle-option.active {
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 3px var(--color-shadow-elevated);
 }
 
 .chart-canvas-wrapper {
@@ -93,9 +187,9 @@ h2 {
    Category Blocks (Accordion)
    =========================================== */
 .category-block {
-    background: white;
+    background: var(--color-surface);
     border-radius: 12px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 2px 4px var(--color-shadow);
     margin-bottom: 12px;
     overflow: hidden;
     border: 1px solid var(--color-border);
@@ -108,7 +202,7 @@ details {
 summary {
     padding: 12px 15px;
     cursor: pointer;
-    background-color: #fff;
+    background-color: var(--color-surface);
     font-weight: 600;
     display: flex;
     justify-content: space-between;
@@ -125,7 +219,7 @@ summary {
 }
 
 summary:hover {
-    background-color: #f8fafc;
+    background-color: var(--color-bg-hover);
 }
 
 summary::-webkit-details-marker {
@@ -152,7 +246,7 @@ details[open] summary::after {
    =========================================== */
 .details-content {
     border-top: 1px solid var(--color-bg-hover);
-    background-color: #ffffff;
+    background-color: var(--color-surface);
 }
 
 table {
@@ -281,10 +375,10 @@ tr:last-child td {
     font-weight: 800;
     margin-top: 20px;
     color: var(--color-positive);
-    background: #f0fff4;
+    background: var(--color-success-bg);
     padding: 15px;
     border-radius: 12px;
-    border: 1px solid #c6f6d5;
+    border: 1px solid var(--color-success-border);
     white-space: nowrap;
 }
 
@@ -302,8 +396,8 @@ tr:last-child td {
     text-align: center;
     padding: 20px;
     color: var(--color-negative);
-    background: #fff5f5;
-    border: 1px solid #feb2b2;
+    background: var(--color-error-bg);
+    border: 1px solid var(--color-error-border);
     border-radius: 8px;
     margin: 20px 0;
 }
@@ -330,7 +424,7 @@ tr:last-child td {
 }
 
 .perf-item.perf-tab {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-style: solid;
 }
@@ -375,11 +469,11 @@ tr:last-child td {
 .perf-tab:hover {
     background: var(--color-bg-page);
     transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 4px 8px var(--color-shadow-elevated);
 }
 
 .perf-tab.active {
-    background: #ebf8ff;
+    background: var(--color-info-bg);
     border-color: var(--color-accent);
     border-width: 2px;
 }
@@ -403,7 +497,7 @@ tr:last-child td {
     padding: 40px;
     color: var(--color-text-subtle);
     font-size: 1em;
-    background: white;
+    background: var(--color-surface);
     border-radius: 12px;
     border: 1px solid var(--color-border);
 }
@@ -423,7 +517,7 @@ tr:last-child td {
     align-items: center;
     gap: 15px;
     padding: 12px 15px;
-    background: white;
+    background: var(--color-surface);
     border-radius: 10px;
     border: 1px solid var(--color-border);
     margin-bottom: 8px;
@@ -489,9 +583,8 @@ tr:last-child td {
    Header Row
    =========================================== */
 .header-row {
-    position: relative;
     display: flex;
-    justify-content: center;
+    justify-content: space-between;
     align-items: center;
     margin-bottom: 15px;
     min-height: 30px;
@@ -501,11 +594,14 @@ tr:last-child td {
     display: flex;
     align-items: center;
     gap: 6px;
+    /* Auto-margins centre the month switcher between the side buttons. */
+    margin: 0 auto;
 }
 
 /* Shared compact sizing for header controls */
 .nav-btn,
 .settings-btn,
+.theme-btn,
 #monthSelector {
     height: 30px;
     box-sizing: border-box;
@@ -576,7 +672,7 @@ tr:last-child td {
 #monthSelector:focus {
     outline: none;
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.2);
+    box-shadow: 0 0 0 2px var(--color-focus-ring);
 }
 
 .edit-btn {
@@ -604,7 +700,10 @@ tr:last-child td {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(15, 23, 42, 0.55);
+    /* Soft blur behind the modal — cheap "glass" feel that works in both themes. */
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     display: flex;
     justify-content: center;
     align-items: center;
@@ -613,19 +712,19 @@ tr:last-child td {
 }
 
 .modal-content {
-    background: white;
+    background: var(--color-surface);
     border-radius: 16px;
     padding: 25px;
     width: 100%;
     max-width: 700px;
     max-height: 90vh;
     overflow-y: auto;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 20px 50px var(--color-shadow-modal);
 }
 
 .modal-content h3 {
     margin: 0 0 20px 0;
-    color: #1a202c;
+    color: var(--color-text-heading);
     font-size: 1.2em;
 }
 
@@ -656,7 +755,7 @@ tr:last-child td {
 .modal-field textarea:focus {
     outline: none;
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.2);
+    box-shadow: 0 0 0 3px var(--color-focus-ring);
 }
 
 .modal-actions {
@@ -682,7 +781,7 @@ tr:last-child td {
 }
 
 .btn-primary:hover {
-    background: #3182ce;
+    background: var(--color-primary);
 }
 
 .btn-secondary {
@@ -700,8 +799,9 @@ tr:last-child td {
    =========================================== */
 #calc-tooltip {
     position: fixed;
+    /* Inverted surface — in dark mode background is light, text is dark. */
     background: var(--color-text);
-    color: #fff;
+    color: var(--color-surface);
     padding: 10px 14px;
     border-radius: 8px;
     font-size: 13px;
@@ -709,7 +809,7 @@ tr:last-child td {
     white-space: pre;
     text-align: right;
     z-index: 1000;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 12px var(--color-shadow-modal);
     pointer-events: auto;
 }
 
@@ -747,7 +847,7 @@ tr:last-child td {
 }
 
 .delta.neutral {
-    color: #6b7280;
+    color: var(--color-text-muted);
     background: rgba(107, 114, 128, 0.1);
 }
 
@@ -774,13 +874,13 @@ tr:last-child td {
 
 .ghost-row .item-name,
 .ghost-row .balance-usd {
-    color: #9ca3af;
+    color: var(--color-text-subtle);
 }
 
 .ghost-row .balance-usd::after {
     content: " (продан)";
     font-size: 10px;
-    color: #9ca3af;
+    color: var(--color-text-subtle);
 }
 
 /* ===========================================
@@ -814,13 +914,13 @@ tr:last-child td {
     margin: 20px 0;
     width: 100%;
     /* Removed max-width 600px */
-    background: white;
+    background: var(--color-surface);
     /* Removed linear-gradient */
     border-radius: 12px;
     padding: 0;
     /* Removed padding to match category-block style if needed, or keeping it but with border */
     border: 1px solid var(--color-border);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 2px 4px var(--color-shadow);
     overflow: hidden;
 }
 
@@ -831,7 +931,7 @@ tr:last-child td {
     font-size: 1em;
     font-weight: 600;
     padding: 12px 15px;
-    background-color: #fff;
+    background-color: var(--color-surface);
     border-bottom: 1px solid var(--color-bg-hover);
     margin-bottom: 0;
     /* Removed large margin */
@@ -964,7 +1064,7 @@ tr:last-child td {
 .performance-table tbody td {
     padding: 7px 4px;
     text-align: right;
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid var(--color-divider);
     white-space: nowrap;
 }
 
@@ -994,7 +1094,7 @@ tr:last-child td {
 }
 
 .perf-table-legend-pill {
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text-placeholder);
     font-size: 11px;
     padding: 3px 9px;
@@ -1048,7 +1148,7 @@ tr:last-child td {
 }
 
 .forecast-item {
-    background: white;
+    background: var(--color-surface);
     /* Remove rgba(255, 255, 255, 0.15) */
     border-radius: 10px;
     padding: 12px;
@@ -1084,13 +1184,8 @@ tr:last-child td {
 /* ===========================================
    Settings Button
    =========================================== */
-.settings-btn {
-    /* Pinned to the right edge of the header so it doesn't shift the centred
-       month-nav-group. */
-    position: absolute;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
+.settings-btn,
+.theme-btn {
     background: var(--color-bg-hover);
     color: var(--color-text-muted);
     width: 30px;
@@ -1099,24 +1194,45 @@ tr:last-child td {
     display: flex;
     justify-content: center;
     align-items: center;
-    transition: all 0.15s, transform 0.15s;
+    transition: all 0.15s;
     flex-shrink: 0;
     padding: 0;
 }
 
-.settings-btn:hover {
+.settings-btn:hover,
+.theme-btn:hover {
     background: var(--color-border);
     border-color: var(--color-border-hover);
 }
 
-.settings-btn:active {
-    transform: translateY(-50%) scale(0.92);
+.settings-btn:active,
+.theme-btn:active {
+    transform: scale(0.92);
 }
 
-.settings-btn svg {
+.settings-btn svg,
+.theme-btn svg {
     width: 16px;
     height: 16px;
     fill: currentColor;
+}
+/* Moon/sun icons are stroke-based — undo the default fill rule above. */
+.theme-btn .icon-sun,
+.theme-btn .icon-moon {
+    fill: none;
+    stroke: currentColor;
+}
+
+/* Theme toggle: show the sun-icon in dark mode (click → light) and the
+   moon-icon in light mode (click → dark). One SVG group per state, toggled
+   via CSS so JS only flips the data-theme attribute. */
+.theme-btn .icon-sun { display: none; }
+.theme-btn .icon-moon { display: block; }
+:root[data-theme="dark"] .theme-btn .icon-sun { display: block; }
+:root[data-theme="dark"] .theme-btn .icon-moon { display: none; }
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .theme-btn .icon-sun { display: block; }
+    :root:not([data-theme="light"]) .theme-btn .icon-moon { display: none; }
 }
 
 /* ===========================================
@@ -1124,7 +1240,7 @@ tr:last-child td {
    =========================================== */
 .source-toggle-group {
     display: flex;
-    background: var(--color-bg-hover);
+    background: var(--color-control-recessed);
     padding: 4px;
     border-radius: 8px;
     margin-bottom: 20px;
@@ -1143,9 +1259,9 @@ tr:last-child td {
 }
 
 .source-toggle-option.active {
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 3px var(--color-shadow-elevated);
 }
 
 .auth-status {
@@ -1158,21 +1274,21 @@ tr:last-child td {
 }
 
 .auth-status.success {
-    background: #f0fff4;
+    background: var(--color-success-bg);
     color: var(--color-positive);
-    border: 1px solid #c6f6d5;
+    border: 1px solid var(--color-success-border);
 }
 
 .auth-status.error {
-    background: #fff5f5;
+    background: var(--color-error-bg);
     color: var(--color-negative);
-    border: 1px solid #feb2b2;
+    border: 1px solid var(--color-error-border);
 }
 
 .auth-status.loading {
-    background: #ebf8ff;
-    color: #3182ce;
-    border: 1px solid #bee3f8;
+    background: var(--color-info-bg);
+    color: var(--color-primary);
+    border: 1px solid var(--color-primary);
 }
 
 .input-group {
@@ -1191,18 +1307,22 @@ tr:last-child td {
 .input-field {
     width: 100%;
     padding: 10px 12px;
+    background: var(--color-surface);
+    color: var(--color-text);
     border: 1px solid var(--color-border);
     border-radius: 8px;
     font-size: 0.95em;
     transition: border-color 0.2s;
     box-sizing: border-box;
-    /* Fix for width overflow */
+}
+.input-field::placeholder {
+    color: var(--color-text-placeholder);
 }
 
 .input-field:focus {
     outline: none;
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.1);
+    box-shadow: 0 0 0 3px var(--color-focus-ring);
 }
 
 .input-hint {
@@ -1217,6 +1337,38 @@ tr:last-child td {
 
 .github-only.visible {
     display: block;
+}
+
+/* ===========================================
+   Visual polish — applies in both themes
+   =========================================== */
+
+/* Tabular figures so financial values line up vertically.
+   Affects all monetary cells (.amount, perf summary, forecast tiles, etc.). */
+.amount,
+.perf-value,
+.forecast-value,
+.transfer-amount,
+.toggle-btn,
+.delta,
+#calc-tooltip,
+.performance-table td {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Keyboard-only focus ring. Mouse clicks don't get the ring (cleaner UX),
+   keyboard navigation gets a clear visible indicator. */
+:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+/* Elements that already manage focus via box-shadow keep that styling. */
+.input-field:focus-visible,
+#monthSelector:focus-visible,
+.modal-field input:focus-visible,
+.modal-field textarea:focus-visible {
+    outline: none;
 }
 
 /* Respect users who request reduced motion (OS-level accessibility setting).

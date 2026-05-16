@@ -2046,6 +2046,9 @@ function renderChart() {
                 // the rest get their region/companies labels and are hidden from
                 // the legend by the filter callback (anything starting with
                 // "ETF - " or named "Companies" is suppressed).
+                // Borders between stock sub-segments are transparent — the canvas
+                // has no own background, so the chart container's bg shows through
+                // the gap. Themes via CSS only, no JS involvement.
                 let firstSg = true;
                 sgDefs.forEach(sg => {
                     if (sgBuckets[sg.key] <= 0) return;
@@ -2054,7 +2057,7 @@ function renderChart() {
                     if (firstSg) firstSg = false;
                     chartValues.push(sgBuckets[sg.key]);
                     chartColors.push(cat.color);
-                    chartBorderColors.push('#ffffff');
+                    chartBorderColors.push('transparent');
                     chartBorderWidths.push(2);
                     chartDeltas.push(null);
                 });
@@ -2097,7 +2100,9 @@ function renderChart() {
             ctx.save();
             const fontSize = 16;
             ctx.font = `800 ${fontSize}px monospace`;
-            ctx.fillStyle = '#2d3748';
+            // Theme-aware: pulls --color-text from :root so dark mode flips automatically.
+            ctx.fillStyle = getComputedStyle(document.documentElement)
+                .getPropertyValue('--color-text').trim() || '#2d3748';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(text, centerX, centerY);
@@ -2214,7 +2219,9 @@ const zeroLinePlugin = {
         if (zeroY < top - 1 || zeroY > bottom + 1) return;
         const ctx = chart.ctx;
         ctx.save();
-        ctx.strokeStyle = '#a0aec0';
+        // Theme-aware: dashed baseline reads from --color-text-placeholder.
+        ctx.strokeStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--color-text-placeholder').trim() || '#a0aec0';
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
@@ -3207,9 +3214,51 @@ function updateMonthArrows() {
     if (next) next.disabled = idx >= availableMonths.length - 1;
 }
 
+// Pulls the active CSS theme colors and applies them as Chart.js defaults
+// (legend labels, axis text, gridlines). Chart.js doesn't auto-respect
+// prefers-color-scheme; we wire it explicitly.
+function applyChartTheme() {
+    if (typeof Chart === 'undefined') return;
+    const cs = getComputedStyle(document.documentElement);
+    Chart.defaults.color = cs.getPropertyValue('--color-text-muted').trim() || '#4a5568';
+    Chart.defaults.borderColor = cs.getPropertyValue('--color-border').trim() || '#e2e8f0';
+}
+
+// Theme toggle — session-only manual override of the OS preference.
+// No localStorage; reload reverts to system. CSS handles the actual switch via
+// the `data-theme` attribute on <html>; we just flip it and re-paint Chart.js.
+function getCurrentTheme() {
+    const explicit = document.documentElement.getAttribute('data-theme');
+    if (explicit) return explicit;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark' : 'light';
+}
+function setupThemeToggle() {
+    const btn = document.getElementById('btn-theme');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        const next = getCurrentTheme() === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        applyChartTheme();
+        if (portfolioChart) portfolioChart.update('none');
+        if (performanceChart) performanceChart.update('none');
+    });
+}
+
 async function init() {
     // Init Settings UI
     initSettingsUI();
+    setupThemeToggle();
+
+    applyChartTheme();
+    // Re-theme charts if the OS toggles between light and dark mid-session.
+    if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            applyChartTheme();
+            if (portfolioChart) portfolioChart.update('none');
+            if (performanceChart) performanceChart.update('none');
+        });
+    }
 
     // 0. Load shared categories
     await fetchCategories();
