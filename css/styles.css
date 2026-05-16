@@ -1160,7 +1160,8 @@ tr:last-child td {
    Month-switch transition (swipe / arrows / selector)
    =========================================== */
 #view-portfolio,
-#performance-summary {
+#performance-summary,
+#view-portfolio canvas {
     will-change: opacity, transform;
     /* Vertical scroll native; horizontal reserved for swipe logic */
     touch-action: pan-y;

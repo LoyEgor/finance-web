@@ -2991,7 +2991,11 @@ function initSettingsUI() {
 // ===========================================
 // MONTH NAVIGATION — live-drag swipe + animated transitions (arrows / selector)
 // ===========================================
-const IGNORE_SELECTOR = 'canvas, select, input, textarea, button, .modal-overlay, .toggle-btn, .delta, .forecast-value, .perf-value, .perf-tab';
+// `canvas` is intentionally NOT in this list — swipe is more common than chart
+// taps, and the 8px horizontal threshold already keeps quick taps working.
+// When a swipe commits, preventDefault on touchmove suppresses the synthesised
+// click so Chart.js doesn't react.
+const IGNORE_SELECTOR = 'select, input, textarea, button, .modal-overlay, .toggle-btn, .delta, .forecast-value, .perf-value, .perf-tab';
 const DOMINANT_THRESHOLD = 8;   // px to decide horizontal vs vertical intent
 const COMMIT_DISTANCE = 60;     // px past which the drag commits
 const COMMIT_VELOCITY = 0.5;    // px/ms flick velocity that also commits
