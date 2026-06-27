@@ -97,3 +97,18 @@ data/*.json
 
 # Allow categories.json (Configuration/Structure)
 !data/categories.json
+
+# Tool outputs (fetched balances/statements — private financial data)
+tools/out/
+
+# Private financial artifacts — must NEVER reach the public repo
+portfolio.md
+img/
+
+# Real config — holds venues, amounts, and the private repo path. Never publish.
+# tools/config.example.py is the tracked placeholder template.
+tools/config.py
+
+# Python bytecode
+__pycache__/
+*.pyc
