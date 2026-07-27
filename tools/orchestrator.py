@@ -312,10 +312,16 @@ def run_validate(out_path=None):
     return findings
 
 
-def run_live(out_path=None):
+def run_live(out_path=None, as_of=None):
     """Live pipeline: iterate config.VENUES api venues, run their fetchers, assemble
     the candidate snapshot, reconcile vs previous month, run checks. Requires keys
     in tools/.env; this path makes signed calls and is NOT exercised in --validate.
+
+    as_of dates the snapshot at the LAST SETTLED day instead of today. Broker
+    statements only cover through a prior business day, so on any run day the flow
+    window ends before today and coverage_gate correctly refuses to reconcile a
+    period the statement doesn't span; the fix is to move the period end back to
+    what the statement actually covers, never to loosen the gate.
     """
     import importlib
 
@@ -324,7 +330,7 @@ def run_live(out_path=None):
     if prev is None:
         raise SystemExit("no previous snapshot in data/ to compare against")
 
-    today = datetime.date.today().isoformat()
+    today = as_of or datetime.date.today().isoformat()
     since = prev["date"]
 
     fetched_items = []
@@ -450,12 +456,15 @@ def main():
     ap.add_argument("--validate", action="store_true",
                     help="offline self-test against the committed golden in data/ (no live signed calls)")
     ap.add_argument("--out", help="write an optional draft (transfers + findings); NEVER touches data/")
+    ap.add_argument("--as-of", dest="as_of",
+                    help="date the snapshot at this last-settled day (YYYY-MM-DD) instead of today, "
+                         "for when the broker statement doesn't cover today yet")
     args = ap.parse_args()
 
     if args.validate:
         run_validate(args.out)
     else:
-        run_live(args.out)
+        run_live(args.out, as_of=args.as_of)
 
 
 if __name__ == "__main__":
