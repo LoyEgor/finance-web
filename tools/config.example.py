@@ -51,6 +51,28 @@ BASE_CCY = "USD"
 # snapshot files here — read from config, never hard-coded.
 PRIVATE_DATA_REPO = "/path/to/your/private-data-repo"
 
+# Downstream projects whose source of truth IS this monthly snapshot. publish.py
+# copies data/{month}.json into each inbox right after the private commit, because
+# publishing is the moment the numbers became verified — a consumer reading a stale
+# book silently analyses last month's portfolio. Each entry:
+#   path    absolute repo root (skipped with a warning if absent)
+#   inbox   repo-relative dir receiving {month}.json verbatim, same filename
+#   refresh argv run in `path` to rebuild derived views from it, or None
+#   derived repo-relative paths `refresh` regenerates OUTSIDE the inbox; listed so
+#           the report shows every file the sync touched, not just the copy
+# publish.py never commits in a consumer: these are shared checkouts that routinely
+# hold other agents' work, so it syncs + reports and leaves the commit to the owner.
+# Leave the list empty if nothing downstream consumes the snapshot.
+SNAPSHOT_CONSUMERS = [
+    {
+        "name": "example-analysis-project",
+        "path": "/path/to/your/analysis-project",
+        "inbox": "inputs/portfolio",
+        "refresh": ["./example-cli", "portfolio"],
+        "derived": ["inputs/portfolio.md"],
+    },
+]
+
 # ── ASSET DEFAULTS ──────────────────────────────────────────────────────────
 # Hints mapping an exchange asset code -> (category id, display name as it should
 # appear in the snapshot). category ids live in data/categories.json. This is a

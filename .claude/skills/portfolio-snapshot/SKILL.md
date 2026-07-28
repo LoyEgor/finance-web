@@ -42,6 +42,10 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
 7. **Reconcile + CHECK layer** (below).
 8. **Present** snapshot + transactions + flags for the user's confirmation; write files after,
    then run `tools/fetch_benchmarks.py` to fill the new date. Do not commit.
+9. **Publish (only once the user says to commit).** `tools/publish.py --push` is the ONLY
+   route: it commits data to the private repo, code to the public one, and then syncs the
+   month to every downstream consumer. Never hand-copy data to a consumer, and never
+   hand-roll the commits — the guards and the fan-out live in that script.
 
 ## Methods (general — solve the class, not the instance)
 - **Snapshot is truth:** never alter a balance to make math close.
@@ -64,10 +68,19 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
 3. **Ask the user only** for what no API/source provides (screenshot balances, no-API sleeve
    totals, physical-cash changes, residual attribution).
 4. **One snapshot per calendar month**, dated the day taken, compared to the previous month.
+5. **A published month reaches every consumer in the same breath.** Committing IS the user's
+   statement that the numbers are verified, and `config.SNAPSHOT_CONSUMERS` lists the projects
+   whose source of truth is this snapshot — they analyse a stale book, silently and confidently,
+   until they get it. So publishing is not done when the commits land: it is done when the
+   consumer report shows every entry synced and refreshed. If a consumer errors or is skipped,
+   say so explicitly in the summary; a quiet skip is the failure mode this rule exists to stop.
+   Consumers are never committed for the user: they are shared checkouts holding other agents'
+   work, so report the pending paths and let the owner commit them.
 
 ## Where things live
 - Config (the only place for specifics): `tools/config.py`.
 - Fetchers: `tools/fetch_ibkr.py`, `tools/fetch_binance.py`, `tools/fetch_benchmarks.py`.
 - Engine: `tools/reconcile.py`; collapse: `tools/simplify_transfers.py`;
   orchestration + guardrail checks: `tools/orchestrator.py`, `tools/checks.py`.
+- Publish + downstream fan-out: `tools/publish.py` (dry run by default; `--push` applies).
 - Secrets: `tools/.env` (read-only keys, never commit). Output: `data/` (gitignored).

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 publish.py — push a monthly snapshot to the PRIVATE data repo and the code to the
-PUBLIC repo, with a hard guard against touching any month but the target one.
+PUBLIC repo, then fan the snapshot out to every downstream consumer, with a hard
+guard against touching any month but the target one.
 
 Two repos (see config.PRIVATE_DATA_REPO and this file's own location):
   PUBLIC  = this finances-web checkout (the public GitHub Pages site).
@@ -16,6 +17,13 @@ The GUARD is the point of this script: a skill misfire could write a stray month
 into finances-web/data/ and a naive sync would clobber other months in the
 private repo. So after syncing we diff the private repo's data/ via git and ABORT
 unless every changed path is in the explicit allowlist for the target month.
+
+CONSUMERS = config.SNAPSHOT_CONSUMERS — projects whose source of truth is this
+            snapshot (e.g. an analysis pipeline reading the book). They are synced
+            AFTER the commits, because committing is the owner's signal that the
+            numbers are verified. Files are copied and each consumer's refresh
+            command is run, but nothing is ever committed there: consumers are
+            shared checkouts that routinely hold other agents' uncommitted work.
 
 DEFAULT = dry run: fully read-only (no file writes, no git writes) — prints the
 target month, the files that would sync, a content diff of what would change in
@@ -152,6 +160,82 @@ def do_copy(plan):
             shutil.copy2(src, dst)
             copied.append(rel)
     return copied
+
+
+# ── downstream consumers ─────────────────────────────────────────────────────
+def consumers():
+    return getattr(config, "SNAPSHOT_CONSUMERS", []) or []
+
+
+def plan_consumers(month):
+    """Return [(spec, src, dst, status)] for each config.SNAPSHOT_CONSUMERS entry.
+
+    status mirrors plan_sync's vocabulary ("new"/"changed"/"same") plus
+    "missing-src" and "missing-repo" so a moved/renamed consumer surfaces as a
+    reported skip instead of a silent no-op.
+    """
+    src = os.path.join(PUBLIC_REPO, "data", f"{month}.json")
+    plan = []
+    for spec in consumers():
+        dst = os.path.join(spec["path"], spec["inbox"], f"{month}.json")
+        if not os.path.isdir(spec["path"]):
+            status = "missing-repo"
+        elif not os.path.exists(src):
+            status = "missing-src"
+        elif not os.path.exists(dst):
+            status = "new"
+        elif filecmp.cmp(src, dst, shallow=False):
+            status = "same"
+        else:
+            status = "changed"
+        plan.append((spec, src, dst, status))
+    return plan
+
+
+def sync_consumers(month, plan):
+    """Copy the snapshot into each consumer inbox and run its refresh command.
+
+    Returns human-readable report lines. A consumer failure is REPORTED, never
+    fatal: the private commit already succeeded by this point, so aborting would
+    leave the published month half-delivered with no way to retry just this step.
+    """
+    lines = []
+    for spec, src, dst, status in plan:
+        name = spec["name"]
+        if status in ("missing-repo", "missing-src"):
+            lines.append(f"  [{status}] {name}: skipped ({spec['path']})")
+            continue
+        if status != "same":
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+        lines.append(f"  [{'up-to-date' if status == 'same' else status}] "
+                     f"{name}: {spec['inbox']}/{month}.json")
+
+        refresh = spec.get("refresh")
+        if refresh:
+            try:
+                r = subprocess.run(refresh, cwd=spec["path"], capture_output=True,
+                                   text=True, timeout=600)
+            except (OSError, subprocess.SubprocessError) as e:
+                lines.append(f"    refresh FAILED ({' '.join(refresh)}): {e}")
+            else:
+                tail = (r.stdout or r.stderr or "").strip().splitlines()
+                note = tail[-1] if tail else "(no output)"
+                verb = "refresh" if r.returncode == 0 else f"refresh FAILED rc={r.returncode}"
+                lines.append(f"    {verb}: {note}")
+
+        watched = [spec["inbox"], *spec.get("derived", [])]
+        # Unstripped: porcelain's XY status column is 2 chars, so a leading-space
+        # status (" M path") loses its first path character if the block is stripped.
+        # check=False: a consumer need not be a git repo, and the files are already
+        # delivered by now — an unavailable git must not raise past a done sync.
+        dirty = git(spec["path"], "status", "--porcelain", "-uall", "--", *watched,
+                    check=False).stdout
+        if dirty.strip():
+            lines.append(f"    uncommitted in {name} (commit it there yourself):")
+            for p in parse_porcelain_paths(dirty):
+                lines.append(f"      ~ {p}")
+    return lines
 
 
 # ── guard ────────────────────────────────────────────────────────────────────
@@ -395,6 +479,14 @@ def main(argv=None):
             print("")
             print("DRY RUN: public guard WOULD abort — resolve the offending paths above "
                   "before --push.")
+        cplan = plan_consumers(month)
+        if cplan:
+            print("")
+            print(f"CONSUMERS would receive data/{month}.json:")
+            for spec, _src, _dst, status in cplan:
+                refresh = spec.get("refresh")
+                suffix = f" + refresh: {' '.join(refresh)}" if refresh else ""
+                print(f"  [{status:>11}] {spec['name']}: {spec['inbox']}/{month}.json{suffix}")
         print("")
         print("DRY RUN complete — no files written, no git writes. Re-run with --push to apply.")
         return 0
@@ -451,6 +543,10 @@ def main(argv=None):
             print(f"    ~ {p}")
     else:
         print("    (no allowlisted code changes)")
+    cplan = plan_consumers(month)
+    for spec, _src, _dst, status in cplan:
+        print(f"  CONSUMER {spec['name']}: [{status}] {spec['inbox']}/{month}.json "
+              f"(sync only, not committed there)")
     reply = input("Proceed? [y/N] ").strip().lower()
     if reply != "y":
         print("Aborted by user. Synced files remain on disk; no git writes performed.")
@@ -460,6 +556,15 @@ def main(argv=None):
     print(private_commit_push(month, to_stage, do_it=True))
     pub_ok, pub_msg = public_commit_push(do_it=True)
     print(pub_msg)
+
+    # After the commits: the month is now verified-and-published, which is exactly
+    # the signal every downstream consumer waits for.
+    if cplan:
+        print("")
+        print("CONSUMERS:")
+        for ln in sync_consumers(month, cplan):
+            print(ln)
+
     if not pub_ok:
         return 1
     print("")
