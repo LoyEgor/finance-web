@@ -307,7 +307,7 @@ def recurring_guard(transfers, config):
 
 
 # ── price_anchor ─────────────────────────────────────────────────────────────
-def price_anchor(prev_items, cur_items, transfers, price_fn, config, price_is_external=True):
+def price_anchor(prev_items, cur_items, transfers, price_fn, config, anchor_venue=None):
     """Cross-venue fungible-asset anchor. For an asset code held on >1 venue, the
     same % market move applies everywhere. We derive the real period return r from
     price_fn (injected: Binance klines / Yahoo) and check each venue's residual:
@@ -320,10 +320,13 @@ def price_anchor(prev_items, cur_items, transfers, price_fn, config, price_is_ex
     flow (a deposit/top-up or an OCR misread) -> flag. FLAG-ONLY: never auto-edit a
     screenshot value (a misread and a real top-up are indistinguishable from value).
 
-    price_is_external=False means r came from a venue's OWN residual (the --validate
-    price_fn), i.e. r was already derived with the flow charged zero return. Crediting
-    the flow half the period return on top then double-counts it and flags the very
-    position r was derived from; the flow enters at face value instead.
+    anchor_venue names the venue whose OWN residual produced r (the --validate
+    price_fn), or None when r came from an external price feed. On THAT venue's rows r
+    was already derived with the flow charged zero return, so crediting the flow half
+    the period return on top double-counts it and flags the very position r was derived
+    from — there the flow enters at face value. Every other venue keeps the half-return
+    term, or its own mid-period flow reads as a hidden one. It may be a callable
+    code -> venue when the anchoring venue differs per asset code.
 
     prev_items / cur_items: {asset_key: {"cat","source","name","val"}} (reconcile shape)
     price_fn(asset_code, prev_date, curr_date) -> float period return r, or None.
@@ -363,13 +366,14 @@ def price_anchor(prev_items, cur_items, transfers, price_fn, config, price_is_ex
                 f"{code}: held on {sorted(venues)} but no price feed return available — anchor skipped.",
                 {"code": code, "venues": sorted(venues)}))
             continue
+        av = anchor_venue(code) if callable(anchor_venue) else anchor_venue
         for k, meta in members:
             pv = (prev_items.get(k) or {}).get("val", 0.0)
             cv = (cur_items.get(k) or {}).get("val", 0.0)
             flow = adj.get(k, 0.0)
             if max(abs(pv), abs(cv)) < dust:
                 continue
-            excess = cv - pv * (1 + r) - flow * ((1 + r / 2) if price_is_external else 1.0)
+            excess = cv - pv * (1 + r) - flow * (1.0 if meta["source"] == av else (1 + r / 2))
             base = abs(pv) if abs(pv) > dust else abs(cv)
             excess_pp = (excess / base * 100) if base else 0.0
             if abs(excess) >= match_floor and abs(excess_pp) > pp:
@@ -568,7 +572,7 @@ def run_all(ctx, config):
         findings += recurring_guard(ctx.get("raw_transfers") or ctx.get("transfers"), config)
     if {"prev_items", "cur_items", "transfers", "price_fn"} <= ctx.keys():
         findings += price_anchor(ctx["prev_items"], ctx["cur_items"], ctx["transfers"], ctx["price_fn"],
-                                 config, ctx.get("price_is_external", True))
+                                 config, ctx.get("anchor_venue"))
     if {"prev_items", "cur_items", "transfers"} <= ctx.keys():
         findings += vanished_venue(ctx["prev_items"], ctx["cur_items"], ctx["transfers"],
                                    ctx.get("deposits", []), config)
@@ -589,7 +593,8 @@ def _self_test():
       - usd_band scales with the cash held, and sizes on the LARGER of the two totals;
       - _is_stable_asset matches the asset CODE, not a substring of the display name;
       - vanished_venue is silenced only by an exit explaining the WHOLE position;
-      - coverage_gate fires on a half-parsed window, not only on a wholly missing one.
+      - coverage_gate fires on a half-parsed window, not only on a wholly missing one;
+      - price_anchor charges the flow no period return ONLY on the anchoring venue.
     """
     import types
 
@@ -646,6 +651,24 @@ def _self_test():
     assert _crit(_cov([1748649600000, None])), "an epoch pair with no end -> MUST fail the gate"
     assert not _crit(_cov("20260531..20260630")), "a spanning window -> gate passes"
     assert not _crit(_cov("20260601..20260630")), "opening the day after prev still spans (prev, curr]"
+
+    # r is derived from the anchoring venue's own residual, so only THAT venue's flow
+    # enters at face value; a screenshot venue's mid-period top-up still earns half the
+    # period return, or it reads as a fabricated hidden flow.
+    bk = reconcile.asset_key("crypto", "Broker", "FOO")
+    hk = reconcile.asset_key("crypto", "Home", "FOO")
+    anch_prev = {bk: {"cat": "crypto", "source": "Broker", "name": "FOO", "val": 1000.0},
+                 hk: {"cat": "crypto", "source": "Home", "name": "FOO", "val": 1000.0}}
+    anch_cur = {bk: {**anch_prev[bk], "val": 1100.0},   # r = +10%, no flow
+                hk: {**anch_prev[hk], "val": 3200.0}}   # 1000*1.1 + 2000*(1 + r/2)
+    top_up = [{"type": "deposit", "category": "crypto", "source": "Home", "name": "FOO", "amount": 2000.0}]
+
+    def _anchor_warns(venue):
+        return [f for f in price_anchor(anch_prev, anch_cur, top_up, lambda *_a: 0.10, cfg, venue)
+                if f["severity"] == "warn"]
+
+    assert not _anchor_warns("Broker"), "a top-up on a NON-anchor venue must not read as a hidden flow"
+    assert _anchor_warns("Home"), "on the anchor venue the flow enters at face value"
 
     # explained_tol and usd_band's formula live in reconcile and read reconcile's
     # own config module, so the fixture config has to stand in for it here.

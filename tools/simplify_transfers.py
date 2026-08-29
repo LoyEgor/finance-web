@@ -10,19 +10,28 @@ so what may be collapsed is bounded by which grosses feed a published number:
   - a move CROSSING a category boundary is merged per asset pair but never netted
     against the opposite direction: 1000 out of crypto and 800 back in is not a
     net 200 inflow — netting it would shrink crypto's yield denominator by 800,
-  - only moves with BOTH ends inside one category are reduced, because the app's
-    category view cannot see them at all: their nets are paired net-source against
-    net-sink, so multi-hop chains collapse and same-category round-trips cancel.
+  - only moves with BOTH ends inside ONE bucket are reduced, because no published
+    view can see them at all: their nets are paired net-source against net-sink, so
+    multi-hop chains collapse and same-bucket round-trips cancel.
 
-Same-category movers pair DIRECTLY (largest source against largest sink), not
-through the category's biggest key: routing A->hub->B hands the hub a withdraw AND
-a deposit of its own that never happened, inflating the gross denominator of its
-sub-bucket — the exact distortion this step exists to avoid. Cross-category legs
-keep their real endpoints, so no synthetic pair (AAPL->BTC) is ever invented.
+A BUCKET is the finest thing the app scores: a category, and inside stocks a
+sub-bucket (companies / ETF us / europe / asia — config.stock_sub_bucket mirrors the
+app's classifyStockItem). A stocks move ACROSS two sub-buckets is a real withdraw and
+a real deposit in the app's per-sub-bucket yields, so it is kept like a cross-category
+leg. Pairing at category granularity re-paired AAPL->VOO plus VTI->MSFT into two
+intra-sub-bucket legs, and companies and ETF-us each silently lost 1000 of gross in
+AND out of their yield denominators.
+
+Same-bucket movers pair DIRECTLY (largest source against largest sink), not through
+the bucket's biggest key: routing A->hub->B hands the hub a withdraw AND a deposit of
+its own that never happened, inflating the gross denominator of its sub-bucket — the
+exact distortion this step exists to avoid. Cross-bucket legs keep their real
+endpoints, so no synthetic pair (AAPL->BTC) is ever invented.
 
 Invariants, enforced by reconcile() before anything is written: per-asset and
-per-category NET unchanged; per-category GROSS in/out across the boundary
-unchanged; and no asset gains gross flow it did not have in the raw set.
+per-category NET unchanged; per-category and per-stocks-sub-bucket GROSS in/out
+across the boundary unchanged; and no asset gains gross flow it did not have in the
+raw set.
 
 Net flows are preserved to the cent: nothing carrying real net is dropped (the old
 dust dead-band silently lost net in the (dust/2, dust) gap). Only sub-cent rounding
@@ -33,18 +42,33 @@ Usage:  python3 tools/simplify_transfers.py raw.json [-o out.json]
 """
 import argparse
 import json
+import os
+import sys
 from collections import defaultdict
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import config  # noqa: E402
 
 # Amounts are carried at cent precision; anything below this is rounding residue,
 # not a real flow. Dropping it cannot change any net at 2-decimal precision.
 EPS = 0.005
 
 
+def _bucket(key):
+    """The finest bucket the app scores this key in: its category, and inside stocks
+    its sub-bucket. Pairing coarser than this moves a published yield denominator."""
+    cat, _source, name = key
+    return config.stock_sub_bucket(name) if cat == "stocks" else cat
+
+
 def simplify(transfers):
     ext_in = defaultdict(float)    # gross external deposits per key
     ext_out = defaultdict(float)   # gross external withdrawals per key
-    cross = defaultdict(float)     # gross per (from_key, to_key) across a category
-    intra = defaultdict(float)     # same-category move net per key (+in / -out)
+    cross = defaultdict(float)     # gross per (from_key, to_key) across a bucket
+    intra = defaultdict(float)     # same-bucket move net per key (+in / -out)
 
     for t in transfers:
         a = float(t["amount"])
@@ -55,7 +79,7 @@ def simplify(transfers):
         elif t["type"] == "move":
             fk = (t["from_category"], t["from_source"], t["from_name"])
             tk = (t["to_category"], t["to_source"], t["to_name"])
-            if fk[0] == tk[0]:
+            if fk[0] == tk[0] and _bucket(fk) == _bucket(tk):
                 intra[fk] -= a
                 intra[tk] += a
             else:
@@ -80,14 +104,16 @@ def simplify(transfers):
         if amt >= EPS:
             emit(fk, tk, amt)
 
-    # A category's same-category nets sum to zero, so its net sources fund its net
-    # sinks exactly — no hub and no remainder to route anywhere.
-    by_cat = defaultdict(dict)
+    # A bucket's own nets sum to zero, so its net sources fund its net sinks exactly —
+    # no hub and no remainder to route anywhere. Pairing stays INSIDE the bucket, so a
+    # leg between two sub-buckets is never invented, and one within a sub-bucket is
+    # emitted only where the raw set already moved money inside it.
+    by_bucket = defaultdict(dict)
     for k, v in intra.items():
         if abs(v) >= EPS:
-            by_cat[k[0]][k] = v
-    for cat in sorted(by_cat):
-        ks = by_cat[cat]
+            by_bucket[(k[0], _bucket(k))][k] = v
+    for bucket in sorted(by_bucket):
+        ks = by_bucket[bucket]
         srcs = sorted(((k, -v) for k, v in ks.items() if v < 0), key=lambda x: (-x[1], x[0]))
         sinks = sorted(((k, v) for k, v in ks.items() if v > 0), key=lambda x: (-x[1], x[0]))
         i = j = 0
@@ -110,6 +136,9 @@ def simplify(transfers):
 #     stay two legs, not a net 200 into crypto
 #   - same-category movers pair directly: stocks A->B, never A->C->B through the
 #     category's largest key C
+#   - two cross-sub-bucket stock rebalances (AAPL->VOO, VTI->MSFT) must NOT be
+#     re-paired into AAPL->MSFT + VTI->VOO: companies and ETF-us each keep 1000 of
+#     gross in and out
 DEMO = [
     {"type": "move", "amount": 1000, "from_category": "stocks", "from_source": "VenueX", "from_name": "AAA", "to_category": "usd", "to_source": "VenueX", "to_name": "Cash"},
     {"type": "deposit", "amount": 1000.00, "category": "usd", "source": "VenueY", "name": "Cash"},
@@ -123,6 +152,8 @@ DEMO = [
     {"type": "move", "amount": 800, "from_category": "usd", "from_source": "VenueY", "from_name": "Cash", "to_category": "crypto", "to_source": "VenueY", "to_name": "ETH"},
     {"type": "move", "amount": 1000, "from_category": "stocks", "from_source": "VenueX", "from_name": "A", "to_category": "stocks", "to_source": "VenueX", "to_name": "B"},
     {"type": "move", "amount": 3000, "from_category": "usd", "from_source": "VenueY", "from_name": "Cash", "to_category": "stocks", "to_source": "VenueX", "to_name": "C"},
+    {"type": "move", "amount": 1000, "from_category": "stocks", "from_source": "VenueX", "from_name": "AAPL", "to_category": "stocks", "to_source": "VenueX", "to_name": "VOO"},
+    {"type": "move", "amount": 1000, "from_category": "stocks", "from_source": "VenueX", "from_name": "VTI", "to_category": "stocks", "to_source": "VenueX", "to_name": "MSFT"},
 ]
 
 
@@ -176,6 +207,36 @@ def _gross_by_category(transfers):
     return gin, gout
 
 
+def _gross_by_stock_sub(transfers):
+    """Gross inflow/outflow per stocks sub-bucket, matching buildStockSubTransfersAll:
+    a move with both legs in ONE sub-bucket is invisible there, a move between two of
+    them is a withdraw on one and a deposit on the other (and, when it is not
+    ETF-to-ETF, on the stocks_etf aggregate the app also renders).
+    Returns (gross_in, gross_out) keyed by sub-bucket."""
+    gin, gout = defaultdict(float), defaultdict(float)
+
+    def add(side, sub, a, aggregate):
+        side[sub] += a
+        if aggregate and sub != "companies":
+            side["etf"] += a
+
+    for t in transfers:
+        a = float(t["amount"])
+        if t["type"] in ("deposit", "withdraw") and t["category"] == "stocks":
+            add(gin if t["type"] == "deposit" else gout, config.stock_sub_bucket(t["name"]), a, True)
+        elif t["type"] == "move":
+            fs = config.stock_sub_bucket(t["from_name"]) if t["from_category"] == "stocks" else None
+            ts = config.stock_sub_bucket(t["to_name"]) if t["to_category"] == "stocks" else None
+            if fs and fs == ts:
+                continue
+            both_etf = bool(fs and ts) and "companies" not in (fs, ts)
+            if fs:
+                add(gout, fs, a, not both_etf)
+            if ts:
+                add(gin, ts, a, not both_etf)
+    return gin, gout
+
+
 def _gross_by_asset(transfers):
     """Gross inflow/outflow per asset key, no netting: every leg counts on the key
     it touches. Returns (gross_in, gross_out)."""
@@ -209,8 +270,9 @@ def _compare(label, before, after, lines, unit):
 def reconcile(raw, simple):
     """Check the invariants the app's published numbers depend on:
       (1) per-asset and per-category NET flow unchanged;
-      (2) per-category GROSS in/out across the boundary unchanged — the yield
-          denominator, which netting an in-leg against an out-leg would move;
+      (2) per-category and per-stocks-sub-bucket GROSS in/out across the boundary
+          unchanged — the yield denominators, which netting an in-leg against an
+          out-leg, or re-pairing two rebalances inside their sub-buckets, would move;
       (3) no asset key gained gross flow it did not have in raw (a pass-through leg
           on a hub key inflates that sub-bucket's denominator).
     (1) and (2) gate; (3) only WARNs, because a leg set that satisfies (2) can still
@@ -225,6 +287,10 @@ def reconcile(raw, simple):
     (rin, rout), (sin, sout) = _gross_by_category(raw), _gross_by_category(simple)
     ok &= _compare("per-category gross-in", rin, sin, lines, "categories")
     ok &= _compare("per-category gross-out", rout, sout, lines, "categories")
+
+    (rin, rout), (sin, sout) = _gross_by_stock_sub(raw), _gross_by_stock_sub(simple)
+    ok &= _compare("per-stock-sub gross-in", rin, sin, lines, "sub-buckets")
+    ok &= _compare("per-stock-sub gross-out", rout, sout, lines, "sub-buckets")
 
     (kin_r, kout_r), (kin_s, kout_s) = _gross_by_asset(raw), _gross_by_asset(simple)
     inflated = [f"      {k}: gross {side} {r.get(k, 0.0):.2f} -> {s[k]:.2f}"

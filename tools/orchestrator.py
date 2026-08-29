@@ -136,6 +136,10 @@ def make_residual_anchor_price_fn(prev, curr, transfers, config):
     signal we want from the golden self-test."""
     adj, _ = reconcile.adjustments(transfers)
     api_venues = {v for v, s in config.VENUES.items() if s.get("method") == "api"}
+    # Which API venue actually produced r, per code: price_anchor charges the flow no
+    # period return ONLY on that venue's rows, and two API venues can anchor different
+    # codes in the same run.
+    anchored_on = {}
 
     def price_fn(code, _a, _b):
         for k, meta in {**prev["items"], **curr["items"]}.items():
@@ -147,9 +151,11 @@ def make_residual_anchor_price_fn(prev, curr, transfers, config):
             cv = curr["items"].get(k, {}).get("val", 0.0)
             flow = adj.get(k, 0.0)
             if abs(pv) > config.TOL["dust_usd"]:
+                anchored_on[code] = meta["source"]
                 return (cv - pv - flow) / pv
         return None
 
+    price_fn.anchor_venue = anchored_on.get
     return price_fn
 
 
@@ -301,7 +307,7 @@ def run_validate(out_path=None):
         "prev_items": _items_map(prev),
         "cur_items": _items_map(curr),
         "price_fn": price_fn,
-        "price_is_external": False,  # r comes from the venue's own residual, not a price feed
+        "anchor_venue": price_fn.anchor_venue,  # r comes from this venue's own residual, not a price feed
         "deposits": [],  # offline: no fetched deposit pool; vanished_venue reports 0 candidates
         "category_residuals": category_residuals(prev, curr, transfers),
         "stable_deltas": stable_deltas(prev, curr),

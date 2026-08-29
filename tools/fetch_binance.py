@@ -296,26 +296,41 @@ def flows(key, secret, start_ms, end_ms):
             if not page:
                 break
             for w in page:
-                done = w.get("completeTime")
-                if done is None and not warned_applytime:
-                    warned_applytime = True
-                    print("  (capital-withdraw: the API returned no completeTime — falling back to "
-                          "applyTime, so a withdraw that settled in a later period is booked here)")
-                done = done if done is not None else w.get("applyTime")
+                # An empty / whitespace / unparsable completeTime is MISSING, not a
+                # timestamp: `is None` alone let "" through, and an unparsable value then
+                # skipped the period filter entirely — double-booking every lookback row.
+                t = to_ms(w.get("completeTime"))
+                by_apply = t is None
+                if by_apply:
+                    t = to_ms(w.get("applyTime"))
                 row = {"coin": w["coin"], "amount": float(w["amount"]), "source": "capital",
-                       "fee": float(w.get("transactionFee", 0)), "time": done,
+                       "fee": float(w.get("transactionFee", 0)),
+                       "time": w.get("applyTime") if by_apply else w.get("completeTime"),
                        "applyTime": w.get("applyTime"), "completeTime": w.get("completeTime"),
                        "address": w.get("address"), "network": w.get("network"), "status": w.get("status")}
                 if w.get("status") not in WITHDRAW_OK:
                     out["dropped"].append({**row, "channel": "capital-withdraw", "reason": "non-final-status"})
                     continue
-                t = to_ms(done)
-                # An unparsable timestamp is KEPT: dropping a completed withdrawal would
-                # turn a real outflow into a fabricated market loss.
-                if t is not None and not (start_ms <= t <= end_ms):
-                    out["dropped"].append({**row, "channel": "capital-withdraw",
-                                           "reason": "completed-outside-period"})
+                if t is None or not (start_ms <= t <= end_ms):
+                    out["dropped"].append({
+                        **row, "channel": "capital-withdraw",
+                        "reason": "completed-outside-period" if not by_apply else
+                                  "no-usable-timestamp" if t is None else "applied-outside-period"})
+                    if by_apply:
+                        # The lookback reaches back before the period precisely to catch rows
+                        # that SETTLED inside it; with no completeTime we cannot tell those
+                        # from ones that settled earlier, so booking by applyTime would
+                        # double-book the previous period's outflow. Flag, never guess.
+                        when = ("no usable applyTime either" if t is None else
+                                f"applied {'before' if t < start_ms else 'after'} the period")
+                        print(f"  !! WARN capital-withdraw: settled withdrawal with no completeTime, "
+                              f"{when} — not booked; check manually: {w['amount']} {w['coin']} "
+                              f"id={w.get('id') or w.get('txId') or '?'} applyTime={w.get('applyTime')!r}")
                     continue
+                if by_apply and not warned_applytime:
+                    warned_applytime = True
+                    print("  (capital-withdraw: the API returned no completeTime — booked by "
+                          "applyTime, so a withdraw that settles in a later period is booked here)")
                 out["withdrawals"].append(row)
                 n += 1
             if len(page) < 1000:

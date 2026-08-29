@@ -101,10 +101,11 @@ def _ymd(s):
     raw = (s or "").strip()
     if not raw:
         return ""
-    # A time suffix is separated by ';', a space, or a 'T' that follows a COMPLETE
-    # date — never a bare 'T', which also sits inside the month tokens OCT and DEC.
-    s = re.split(r"[; ]", raw, 1)[0]
-    s = re.sub(r"^(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}|\d{8})T.*$", r"\1", s)
+    # A time suffix is separated by ';', whitespace, or a 'T' — the 'T' only where it
+    # cannot be the one inside the month tokens OCT and DEC: before an hh:mm, or right
+    # after a complete YYYYMMDD run (the "no separator" Flex setting).
+    s = re.split(r"[;\s]", raw, maxsplit=1)[0]
+    s = re.split(r"T(?=\d{2}:\d{2})|(?<=^\d{8})T", s, maxsplit=1)[0]
     digits = s.replace("-", "").replace("/", "")
     # >= 8: the "no separator" Flex setting emits YYYYMMDDhhmmss as one digit run.
     if len(digits) >= 8 and digits.isdigit():
@@ -163,7 +164,8 @@ def parse(root):
             out["base_cash"] = f(c, "endingCash")  # total cash already in base USD
             continue
         out["cash"].append({"currency": cur, "endingCash": f(c, "endingCash"),
-                            "deposits": f(c, "deposits"), "withdrawals": f(c, "withdrawals")})
+                            "deposits": f(c, "deposits"), "withdrawals": f(c, "withdrawals"),
+                            "fxRateToBase": f(c, "fxRateToBase", 0.0)})
 
     for t in stmt.findall(".//Trade"):
         out["trades"].append({
@@ -208,7 +210,20 @@ def to_snapshot_items(data, venue="IBKR"):
     # USD is the base currency; consolidate ALL broker cash (any currency) into one USD line.
     total = data["base_cash"]
     if total is None:
-        total = sum(c["endingCash"] * data["fx"].get(c["currency"], 1.0) for c in data["cash"])
+        total = 0.0
+        for c in data["cash"]:
+            # No rate and no BASE_SUMMARY total: folding at 1:1 would put e.g. 12,000 HUF
+            # into the snapshot as 12,000 USD, and a snapshot with an unvalued cash line
+            # cannot be trusted at all — so this fails loudly instead of warning.
+            rate = data["fx"].get(c["currency"]) or c.get("fxRateToBase")
+            if not rate:
+                if abs(c["endingCash"]) < 0.005:
+                    continue
+                raise ValueError(
+                    f"{venue}: cash {c['endingCash']:,.2f} {c['currency']} has no ConversionRate row "
+                    f"and the statement carries no BASE_SUMMARY total — refusing to value it at 1:1. "
+                    f"Enable Conversion Rates in the Flex query and re-run.")
+            total += c["endingCash"] * rate
     if abs(total) >= 0.005:
         items.append({"category": "usd", "source": venue, "name": "USD Cash", "val": round(total, 2)})
     return items

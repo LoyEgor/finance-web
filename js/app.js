@@ -551,16 +551,27 @@ function updateForecastUI(stats) {
 }
 
 
+// The last snapshot before the year anchors its first return: without it January is
+// forced to the zero-km baseline while the stats bar already shows a real
+// month-over-month P&L against that snapshot. December is not always that snapshot.
+function priorYearAnchorId(year) {
+    if (year <= START_DATE.getFullYear()) return null;
+    const firstOfYear = `${year}-01`;
+    const months = (availableMonths && availableMonths.length) ? availableMonths : generateCandidateMonths();
+    let anchor = null;
+    for (const m of months) {
+        if (m.id < firstOfYear && (anchor === null || m.id > anchor)) anchor = m.id;
+    }
+    return anchor;
+}
+
 // 1. Fetch data for all months from Jan to current
 async function fetchYearSequence(currentMonthId) {
     const year = parseInt(currentMonthId.split('-')[0], 10);
     const monthIndex = parseInt(currentMonthId.split('-')[1], 10);
 
     const ids = [];
-    // The previous December anchors the first return of a later year: without it
-    // January is forced to the zero-km baseline while the stats bar already shows a
-    // real month-over-month P&L against December.
-    const anchorId = year > START_DATE.getFullYear() ? `${year - 1}-12` : null;
+    const anchorId = priorYearAnchorId(year);
     if (anchorId) ids.push(anchorId);
     for (let m = 1; m <= monthIndex; m++) {
         ids.push(`${year}-${String(m).padStart(2, '0')}`);
@@ -631,15 +642,32 @@ function calculateProjectedAnnual(ytd, monthsPassed) {
 }
 
 // benchmarks.json is date-keyed and sparse — a snapshot date often has no quote of
-// its own, and dropping the comparison blanks the whole alpha column.
-function benchmarkPriceAt(prices, date) {
+// its own, and dropping the comparison blanks the whole alpha column. The age cap
+// covers weekends and holidays but not a benchmarks.json left behind by a newer
+// snapshot: unbounded, the fallback answers both ends of a period with the same
+// stale quote and fabricates a 0.00% benchmark return.
+const BENCHMARK_QUOTE_MAX_AGE_DAYS = 7;
+
+function benchmarkQuoteAt(prices, date) {
     if (!prices || !date) return null;
-    if (prices[date]) return prices[date];
+    if (prices[date]) return { date, price: prices[date] };
     let best = null;
     for (const d of Object.keys(prices)) {
         if (d <= date && (best === null || d > best)) best = d;
     }
-    return best === null ? null : prices[best];
+    if (best === null) return null;
+    const ageDays = (new Date(date) - new Date(best)) / (1000 * 60 * 60 * 24);
+    if (!isFinite(ageDays) || ageDays > BENCHMARK_QUOTE_MAX_AGE_DAYS) return null;
+    return { date: best, price: prices[best] };
+}
+
+// One quote answering both ends of the period is no measured period, not a flat one.
+function benchmarkPeriodReturn(prices, fromDate, toDate) {
+    const from = benchmarkQuoteAt(prices, fromDate);
+    const to = benchmarkQuoteAt(prices, toDate);
+    if (!from || !to || from.date === to.date) return null;
+    if (!(from.price > 0) || !(to.price > 0)) return null;
+    return to.price / from.price - 1;
 }
 
 // Helper: build per-category transfer list (includes moves as deposit/withdraw)
@@ -733,10 +761,10 @@ function stdDev(arr) {
     return Math.sqrt(variance);
 }
 
-// Compute YTD / annualised vol / Sharpe-style ratio for a bucket from
-// the stored monthly yields and compounded series.
+// Compute YTD / annualised vol / Sharpe-style ratio for a bucket from its
+// stored monthly yields.
 // Risk-free rate: 3.5% annual (matches the Deposit benchmark used elsewhere).
-function bucketStats(monthlyYields, compoundedSeries, periodStarts, ctx) {
+function bucketStats(monthlyYields, periodStarts, ctx) {
     if (!monthlyYields || monthlyYields.length === 0) {
         return { ytd: null, vol: null, sharpe: null, monthsTracked: 0 };
     }
@@ -748,14 +776,35 @@ function bucketStats(monthlyYields, compoundedSeries, periodStarts, ctx) {
     // Only a period the bucket carried value into is a measured return: the zero-km
     // baseline and a bucket funded from zero inside the period have no start to
     // measure against, whichever month they fall in.
-    const real = monthlyYields.filter((y, i) => isValue(y) && isFinite(y) && (starts[i] || 0) > 0);
+    const measuredIdxs = [];
+    monthlyYields.forEach((y, i) => {
+        if (!isValue(y) || !isFinite(y)) return;
+        if ((starts[i] || 0) > 0) measuredIdxs.push(i);
+    });
 
+    // YTD compounds the same measured periods volatility and Sharpe are built on: an
+    // unmeasurable period contributes no return instead of dropping out of one metric
+    // while inflating another, and no measured period at all is "—", not 0%.
     let ytd = null;
-    if (compoundedSeries) {
-        for (let i = compoundedSeries.length - 1; i >= 0; i--) {
-            if (isValue(compoundedSeries[i])) { ytd = compoundedSeries[i]; break; }
-        }
+    if (measuredIdxs.length) {
+        let compounded = 1;
+        measuredIdxs.forEach(i => { compounded *= (1 + monthlyYields[i]); });
+        ytd = compounded - 1;
     }
+
+    // Calendar months a period spans — a missing snapshot makes one return cover
+    // several months, which is not a monthly observation.
+    const spanMonths = (i) => {
+        let prev = -1;
+        for (const d of dataIdxs) {
+            if (d >= i) break;
+            prev = d;
+        }
+        if (prev < 0 || !monthIds[prev] || !monthIds[i]) return 1;
+        return Math.max(1, monthsBetween(monthIds[prev], monthIds[i]));
+    };
+    const monthlyEquivalent = (r, n) => ((n > 1 && (1 + r) > 0) ? Math.pow(1 + r, 1 / n) - 1 : r);
+    const real = measuredIdxs.map(i => monthlyEquivalent(monthlyYields[i], spanMonths(i)));
 
     // Annualise over elapsed calendar months, not over the number of periods: a
     // missing middle snapshot makes one period cover two months.
@@ -1003,14 +1052,12 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
 
             const vtPrices = benchmarksData?.['VT'] || {};
             const vooPrices = benchmarksData?.['VOO'] || {};
-            const vtPrev = benchmarkPriceAt(vtPrices, prevSnapshotDate);
-            const vtCurr = benchmarkPriceAt(vtPrices, currentSnapshotDate);
-            const vooPrev = benchmarkPriceAt(vooPrices, prevSnapshotDate);
-            const vooCurr = benchmarkPriceAt(vooPrices, currentSnapshotDate);
-            benchmarkStarts.vt[idx] = vtPrev || 0;
-            benchmarkStarts.voo[idx] = vooPrev || 0;
-            benchmarkYields.vt.push((vtPrev && vtCurr) ? (vtCurr / vtPrev - 1) : null);
-            benchmarkYields.voo.push((vooPrev && vooCurr) ? (vooCurr / vooPrev - 1) : null);
+            const vtMonth = benchmarkPeriodReturn(vtPrices, prevSnapshotDate, currentSnapshotDate);
+            const vooMonth = benchmarkPeriodReturn(vooPrices, prevSnapshotDate, currentSnapshotDate);
+            benchmarkStarts.vt[idx] = vtMonth === null ? 0 : 1;
+            benchmarkStarts.voo[idx] = vooMonth === null ? 0 : 1;
+            benchmarkYields.vt.push(vtMonth);
+            benchmarkYields.voo.push(vooMonth);
         }
 
         yields.push(yieldVal);
@@ -1106,20 +1153,20 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     // --- Performance comparison table data ---
     const statsCtx = { monthIds, dataIdxs };
     const performanceTable = {
-        companies:    bucketStats(subStocksYields.stocks_companies,   subStocksSeries.stocks_companies,  subStocksStarts.stocks_companies,  statsCtx),
-        etf_total:    bucketStats(subStocksYields.stocks_etf,         subStocksSeries.stocks_etf,        subStocksStarts.stocks_etf,        statsCtx),
-        etf_us:       bucketStats(subStocksYields.stocks_etf_us,      subStocksSeries.stocks_etf_us,     subStocksStarts.stocks_etf_us,     statsCtx),
-        etf_europe:   bucketStats(subStocksYields.stocks_etf_europe,  subStocksSeries.stocks_etf_europe, subStocksStarts.stocks_etf_europe, statsCtx),
-        etf_asia:     bucketStats(subStocksYields.stocks_etf_asia,    subStocksSeries.stocks_etf_asia,   subStocksStarts.stocks_etf_asia,   statsCtx),
-        stocks_total: bucketStats(categoryYields.stocks || [],        categorySeries.stocks || [],       categoryStarts.stocks || [],       statsCtx),
-        vt:           bucketStats(benchmarkYields.vt,                 benchmarkSeries.vt,                benchmarkStarts.vt,                statsCtx),
-        voo:          bucketStats(benchmarkYields.voo,                benchmarkSeries.voo,               benchmarkStarts.voo,               statsCtx)
+        companies:    bucketStats(subStocksYields.stocks_companies,   subStocksStarts.stocks_companies,  statsCtx),
+        etf_total:    bucketStats(subStocksYields.stocks_etf,         subStocksStarts.stocks_etf,        statsCtx),
+        etf_us:       bucketStats(subStocksYields.stocks_etf_us,      subStocksStarts.stocks_etf_us,     statsCtx),
+        etf_europe:   bucketStats(subStocksYields.stocks_etf_europe,  subStocksStarts.stocks_etf_europe, statsCtx),
+        etf_asia:     bucketStats(subStocksYields.stocks_etf_asia,    subStocksStarts.stocks_etf_asia,   statsCtx),
+        stocks_total: bucketStats(categoryYields.stocks || [],        categoryStarts.stocks || [],       statsCtx),
+        vt:           bucketStats(benchmarkYields.vt,                 benchmarkStarts.vt,                statsCtx),
+        voo:          bucketStats(benchmarkYields.voo,                benchmarkStarts.voo,               statsCtx)
     };
     // Other categories (Safe, Cash/USD, Crypto, Copytrading) — for the toggleable
     // "compare-with-anything" rows in the table.
     ['safe', 'usd', 'crypto', 'copy'].forEach(catId => {
         if (categoryYields[catId]) {
-            performanceTable[catId] = bucketStats(categoryYields[catId], categorySeries[catId], categoryStarts[catId], statsCtx);
+            performanceTable[catId] = bucketStats(categoryYields[catId], categoryStarts[catId], statsCtx);
         }
     });
 
@@ -1147,13 +1194,8 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         const vtPrices = benchmarksData['VT'] || {};
         const vooPrices = benchmarksData['VOO'] || {};
 
-        const vtPrev = benchmarkPriceAt(vtPrices, currentMonthPrevDate);
-        const vtCurr = benchmarkPriceAt(vtPrices, currentMonthCurrDate);
-        const vooPrev = benchmarkPriceAt(vooPrices, currentMonthPrevDate);
-        const vooCurr = benchmarkPriceAt(vooPrices, currentMonthCurrDate);
-
-        const vtMonth = (vtPrev && vtCurr) ? (vtCurr / vtPrev - 1) : null;
-        const vooMonth = (vooPrev && vooCurr) ? (vooCurr / vooPrev - 1) : null;
+        const vtMonth = benchmarkPeriodReturn(vtPrices, currentMonthPrevDate, currentMonthCurrDate);
+        const vooMonth = benchmarkPeriodReturn(vooPrices, currentMonthPrevDate, currentMonthCurrDate);
 
         const invested = currentMonthStart + currentMonthDeposits;
 

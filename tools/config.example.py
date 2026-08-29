@@ -11,8 +11,10 @@ config.py is THE SINGLE PLACE for everything portfolio-specific. Edit ONLY confi
 when your situation changes (new venue, dropped a coin, switched benchmarks, salary
 changed, etc.). The orchestrator, checks, and fetchers read from here and contain NO
 hard-coded tickers, venues, or amounts. Nothing below is load-bearing for the LOGIC —
-it is data the logic consumes. If a value here is stale, the logic still runs; it just
-flags against the wrong expectation, so keep it current.
+it is data the logic consumes (the one exception is stock_sub_bucket, the canonical
+mirror of the app's ETF table — it lives with the table it reads). If a value here
+is stale, the logic still runs; it just flags against the wrong expectation, so
+keep it current.
 """
 
 # ── VENUES ──────────────────────────────────────────────────────────────────
@@ -92,6 +94,31 @@ ASSET_MAP = {
 }
 # Stablecoins / cash-equivalents: assumed ~0 market move (their delta == flow).
 STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "RWUSD"}
+
+# ── STOCKS SUB-BUCKETS ──────────────────────────────────────────────────────
+# The app scores the stocks category per sub-bucket (companies + ETF by region), so
+# simplify_transfers has to pair transfers at THAT granularity: a leg collapsed
+# inside one sub-bucket is invisible to the app, while a leg invented between two
+# sub-buckets moves their published yield denominators. Mirrors js/app.js ETF_REGION
+# and classifyStockItem — keep the two tables in lockstep.
+ETF_REGION = {t: "us" for t in (
+    "VOO SPY IVV SPLG VTI ITOT SCHB RSP QQQ QQQM DIA VUG IWF SCHG VTV IWD SCHV "
+    "VYM SCHD DGRO HDV IWM VB IJR VO IJH SCHM XLK VGT SOXX SMH DRAM PPA SPMO "
+    # global funds are scored with the US sleeve, as in the app
+    "VT ACWI VEA IEFA VWO IEMG EEM CSPX SXR8 SWDA IWDA EUNL EIMI VWCE").split()}
+ETF_REGION.update({t: "europe" for t in (
+    "MEUD EXSA IMEU EUNK VGK IEV EZU FEZ VUKE ISF CSUK SXR3 EWU").split()})
+ETF_REGION.update({t: "asia" for t in (
+    "AAXJ VPL FXI MCHI KWEB CQQQ FXC CBUK EWJ DXJ TPXE SXRZ VJPA EWY CSKR EWT INDA EPI").split()})
+
+
+def stock_sub_bucket(name):
+    """'companies' | 'etf_us' | 'etf_europe' | 'etf_asia' for a stocks display name,
+    resolved exactly like js classifyStockItem (upper-cased, dots/spaces stripped)."""
+    ticker = "".join(ch for ch in (name or "").upper() if ch != "." and not ch.isspace())
+    region = ETF_REGION.get(ticker)
+    return f"etf_{region}" if region else "companies"
+
 
 # ── BENCHMARKS ──────────────────────────────────────────────────────────────
 # Symbols to fetch each snapshot (Yahoo tickers). NOT freely swappable: the app
