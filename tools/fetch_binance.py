@@ -299,7 +299,11 @@ def flows(key, secret, start_ms, end_ms):
                 # An empty / whitespace / unparsable completeTime is MISSING, not a
                 # timestamp: `is None` alone let "" through, and an unparsable value then
                 # skipped the period filter entirely — double-booking every lookback row.
+                # So is 0: the API's uninitialised value, which taken literally reads as
+                # 1970 — a real date, and one outside every period.
                 t = to_ms(w.get("completeTime"))
+                if t is not None and t <= 0:
+                    t = None
                 by_apply = t is None
                 if by_apply:
                     t = to_ms(w.get("applyTime"))

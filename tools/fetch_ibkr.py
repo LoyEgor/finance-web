@@ -90,6 +90,10 @@ def f(el, attr, default=0.0):
         return default
 
 
+_DATE_PREFIX = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}|\d{8}|\d{1,2}-[A-Za-z]{3}-(?:\d{4}|\d{2}))")
+
+
 def _ymd(s):
     """Canonical YYYYMMDD from any date format a Flex query can be configured to emit
     (YYYYMMDD, YYYY-MM-DD, MM/dd/yyyy, dd-MMM-yy), with an optional time suffix.
@@ -101,11 +105,12 @@ def _ymd(s):
     raw = (s or "").strip()
     if not raw:
         return ""
-    # A time suffix is separated by ';', whitespace, or a 'T' — the 'T' only where it
-    # cannot be the one inside the month tokens OCT and DEC: before an hh:mm, or right
-    # after a complete YYYYMMDD run (the "no separator" Flex setting).
-    s = re.split(r"[;\s]", raw, maxsplit=1)[0]
-    s = re.split(r"T(?=\d{2}:\d{2})|(?<=^\d{8})T", s, maxsplit=1)[0]
+    # A time suffix is dropped only when what precedes it is a COMPLETE date and the
+    # separator is ';', whitespace or 'T'. Anchoring on the whole date is what keeps the
+    # 'T' inside the month tokens OCT and DEC from splitting 15-OCT-2026, without
+    # assuming the time itself is punctuated (Flex emits HHmmss just as happily).
+    m = _DATE_PREFIX.match(raw)
+    s = m.group(1) if m and (m.end() == len(raw) or raw[m.end()] in "T;" or raw[m.end()].isspace()) else raw
     digits = s.replace("-", "").replace("/", "")
     # >= 8: the "no separator" Flex setting emits YYYYMMDDhhmmss as one digit run.
     if len(digits) >= 8 and digits.isdigit():
@@ -141,8 +146,12 @@ def parse(root):
     fx_date = {}  # ConversionRates carry a daily series — keep the latest reportDate per currency
     for cr in stmt.findall(".//ConversionRate"):
         cur, d = cr.get("fromCurrency"), cr.get("reportDate") or ""
-        if cur and d >= fx_date.get(cur, ""):
-            out["fx"][cur] = f(cr, "rate", 1.0)
+        # A missing / unparsable / non-positive rate is an ABSENT rate, never 1.0:
+        # defaulting it makes the row look like a usable rate and folds 12,000 HUF in as
+        # 12,000 USD — the very case the refusals below exist to catch.
+        rate = f(cr, "rate", 0.0)
+        if cur and rate > 0 and d >= fx_date.get(cur, ""):
+            out["fx"][cur] = rate
             fx_date[cur] = d
 
     navs = stmt.findall(".//EquitySummaryByReportDateInBase")
@@ -150,12 +159,22 @@ def parse(root):
         out["nav"] = f(navs[-1], "total")  # last report date = end of period
 
     for p in stmt.findall(".//OpenPosition"):
-        fx = out["fx"].get(p.get("currency")) or f(p, "fxRateToBase", 1.0) or 1.0
+        fx = out["fx"].get(p.get("currency")) or f(p, "fxRateToBase", 0.0)
+        val, pnl = f(p, "positionValue"), f(p, "fifoPnlUnrealized")
+        if fx <= 0:
+            # Same refusal as the cash lines in to_snapshot_items, on the LARGER rows: a
+            # 10,000 EUR holding folded at 1:1 enters the snapshot as $10,000.
+            if abs(val) >= 0.005 or abs(pnl) >= 0.005:
+                raise ValueError(
+                    f"position {p.get('symbol')} {val:,.2f} {p.get('currency')} has no "
+                    f"ConversionRate row and no usable fxRateToBase — refusing to value it "
+                    f"at 1:1. Enable Conversion Rates in the Flex query and re-run.")
+            fx = 1.0
         out["positions"].append({
             "symbol": p.get("symbol"), "assetCategory": p.get("assetCategory"),
             "currency": p.get("currency"), "quantity": f(p, "position"),
-            "value_native": f(p, "positionValue"), "value_usd": round(f(p, "positionValue") * fx, 2),
-            "unrealizedPnl": round(f(p, "fifoPnlUnrealized") * fx, 2), "fxRateToBase": fx,
+            "value_native": val, "value_usd": round(val * fx, 2),
+            "unrealizedPnl": round(pnl * fx, 2), "fxRateToBase": fx,
         })
 
     for c in stmt.findall(".//CashReportCurrency"):

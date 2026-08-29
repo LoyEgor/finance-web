@@ -122,23 +122,24 @@ _PERIOD_CACHE = {}
 def _period_bounds(month):
     """The reconciliation period (prev_date, curr_date] whose flows `month` publishes.
 
-    prev_date is the latest snapshot date strictly before `month`, taken from the
-    public data/ dir and then from the PRIVATE repo, which holds the full history. An
-    absent lower bound must NOT degrade to "everything up to curr_date": on a fresh
-    clone, whose public data/ holds only the month being produced, that selects every
-    historical transfers file in the private repo for DELETION. Without both bounds
-    the window is filename-scoped instead (see _selects_transfers).
+    prev_date is the latest snapshot date strictly before `month` across BOTH the
+    public data/ dir and the PRIVATE repo, which holds the full history — the MAX of
+    the two, never the first repo that happens to have one: a leftover 2026-01.json in
+    a public data/ would otherwise win over the private repo's true predecessor and
+    widen the period across months, selecting intermediate historical transfers for
+    DELETION. An absent lower bound must NOT degrade to "everything up to curr_date"
+    either; without both bounds the window is filename-scoped instead (see
+    _selects_transfers).
     """
     if month not in _PERIOD_CACHE:
         curr_date = _snapshot_date(PUBLIC_REPO, month)
         prev_date = None
         for repo in (PUBLIC_REPO, PRIVATE_REPO):
             for m in reversed([m for m in _snapshot_months(repo) if m < month]):
-                prev_date = _snapshot_date(repo, m)
-                if prev_date:
+                d = _snapshot_date(repo, m)
+                if d:
+                    prev_date = max(prev_date, d) if prev_date else d
                     break
-            if prev_date:
-                break
         if curr_date and not prev_date:
             print(f"NOTE: no snapshot before {month} in either repo — the transfers window "
                   f"is filename-scoped (transfers-{month}*) only.")
@@ -224,8 +225,14 @@ def allowed_data_files(month, deletes=None):
 
 # ── sync ─────────────────────────────────────────────────────────────────────
 def tracked_data(repo):
-    """data/ paths git TRACKS in `repo`."""
-    out = git(repo, "ls-files", "--", "data/", check=False).stdout
+    """data/ paths git tracks in `repo` AT HEAD.
+
+    The HEAD tree, not the index: a run whose commit hook rejected it leaves the
+    deletion STAGED, so an index-derived set no longer lists the file — it drops out
+    of plan_deletes, and the ` D data/...` git still reports aborts every retry as a
+    stray path.
+    """
+    out = git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", "data/", check=False).stdout
     return {ln.strip() for ln in out.splitlines() if ln.strip()}
 
 
@@ -697,11 +704,13 @@ def main(argv=None):
             print("  WARNING: private data/ already has out-of-allowlist changes above;")
             print("           resolve them before running --push or the guard will abort.")
         print("")
-        # What WOULD be committed/pushed. Stage only files this run would copy
-        # that are also on the data allowlist (defense-in-depth vs. dirty siblings).
+        # What WOULD be committed/pushed, derived the way the live path derives it: every
+        # dirty allowlisted path, not just this run's copies. An earlier run that copied
+        # but never committed leaves its files dirty, and --push commits them — listing
+        # only the copy plan promises less than --push would do.
         allow_data = set(allowed_data_files(month, deletes))
-        would_copy = [r for r, _s, _d, st in plan
-                      if st in ("new", "changed") and r in allow_data and r not in deletes]
+        dirty_after_copy = set(changed) | {r for r, _s, _d, st in plan if st in ("new", "changed")}
+        would_copy = sorted((dirty_after_copy & allow_data) - set(deletes))
         would_copy += [r for r in deletes if r in tracked]
         _priv_ok, priv_msg = private_commit_push(month, would_copy, do_it=False)
         print(priv_msg)

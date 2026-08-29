@@ -57,11 +57,29 @@ import config  # noqa: E402
 EPS = 0.005
 
 
+_warned_no_sub = False
+
+
+def _sub_bucket_fn():
+    """config.stock_sub_bucket, or None on a config.py predating the STOCKS SUB-BUCKETS
+    block — config.py is a one-time copy of the template, so it does not gain new
+    entries. Callers fall back to category granularity instead of dying."""
+    global _warned_no_sub
+    fn = getattr(config, "stock_sub_bucket", None)
+    if fn is None and not _warned_no_sub:
+        _warned_no_sub = True
+        print("  !! WARN: config.py lacks stock_sub_bucket/ETF_REGION — copy the STOCKS "
+              "SUB-BUCKETS block from config.example.py; stocks sub-bucket yields may be "
+              "distorted until then")
+    return fn
+
+
 def _bucket(key):
     """The finest bucket the app scores this key in: its category, and inside stocks
     its sub-bucket. Pairing coarser than this moves a published yield denominator."""
     cat, _source, name = key
-    return config.stock_sub_bucket(name) if cat == "stocks" else cat
+    sub = _sub_bucket_fn()
+    return sub(name) if cat == "stocks" and sub else cat
 
 
 def simplify(transfers):
@@ -214,6 +232,9 @@ def _gross_by_stock_sub(transfers):
     ETF-to-ETF, on the stocks_etf aggregate the app also renders).
     Returns (gross_in, gross_out) keyed by sub-bucket."""
     gin, gout = defaultdict(float), defaultdict(float)
+    classify = _sub_bucket_fn()
+    if classify is None:
+        return gin, gout  # no sub-buckets to check: _bucket pairs at category granularity
 
     def add(side, sub, a, aggregate):
         side[sub] += a
@@ -223,10 +244,10 @@ def _gross_by_stock_sub(transfers):
     for t in transfers:
         a = float(t["amount"])
         if t["type"] in ("deposit", "withdraw") and t["category"] == "stocks":
-            add(gin if t["type"] == "deposit" else gout, config.stock_sub_bucket(t["name"]), a, True)
+            add(gin if t["type"] == "deposit" else gout, classify(t["name"]), a, True)
         elif t["type"] == "move":
-            fs = config.stock_sub_bucket(t["from_name"]) if t["from_category"] == "stocks" else None
-            ts = config.stock_sub_bucket(t["to_name"]) if t["to_category"] == "stocks" else None
+            fs = classify(t["from_name"]) if t["from_category"] == "stocks" else None
+            ts = classify(t["to_name"]) if t["to_category"] == "stocks" else None
             if fs and fs == ts:
                 continue
             both_etf = bool(fs and ts) and "companies" not in (fs, ts)

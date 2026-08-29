@@ -572,7 +572,18 @@ async function fetchYearSequence(currentMonthId) {
 
     const ids = [];
     const anchorId = priorYearAnchorId(year);
-    if (anchorId) ids.push(anchorId);
+    if (anchorId) {
+        // Every month from the anchor to the year boundary, not just the anchor: their
+        // transfer files fall inside the anchor -> January period and would otherwise be
+        // dropped from it, fabricating that period's return.
+        const anchorYear = parseInt(anchorId.split('-')[0], 10);
+        const anchorMonth = parseInt(anchorId.split('-')[1], 10);
+        for (let y = anchorYear; y < year; y++) {
+            for (let m = (y === anchorYear ? anchorMonth : 1); m <= 12; m++) {
+                ids.push(`${y}-${String(m).padStart(2, '0')}`);
+            }
+        }
+    }
     for (let m = 1; m <= monthIndex; m++) {
         ids.push(`${year}-${String(m).padStart(2, '0')}`);
     }
@@ -587,8 +598,13 @@ async function fetchYearSequence(currentMonthId) {
     }))));
 
     // Sort by id ensures Jan -> Feb -> ...
+    const firstOfYear = `${year}-01`;
     return results
-        .filter(r => r.id !== anchorId || r.data)
+        .filter(r => {
+            if (r.id === anchorId) return !!r.data;
+            if (r.id >= firstOfYear) return true;
+            return !!r.data || (r.transferGroups && r.transferGroups.length > 0);
+        })
         .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -761,6 +777,22 @@ function stdDev(arr) {
     return Math.sqrt(variance);
 }
 
+// Calendar months a period spans — a missing snapshot makes one return cover
+// several months, which is not a monthly observation.
+function periodSpanMonths(i, monthIds, dataIdxs) {
+    let prev = -1;
+    for (const d of dataIdxs) {
+        if (d >= i) break;
+        prev = d;
+    }
+    if (prev < 0 || !monthIds[prev] || !monthIds[i]) return 1;
+    return Math.max(1, monthsBetween(monthIds[prev], monthIds[i]));
+}
+
+function monthlyEquivalentYield(r, n) {
+    return (n > 1 && (1 + r) > 0) ? Math.pow(1 + r, 1 / n) - 1 : r;
+}
+
 // Compute YTD / annualised vol / Sharpe-style ratio for a bucket from its
 // stored monthly yields.
 // Risk-free rate: 3.5% annual (matches the Deposit benchmark used elsewhere).
@@ -792,34 +824,19 @@ function bucketStats(monthlyYields, periodStarts, ctx) {
         ytd = compounded - 1;
     }
 
-    // Calendar months a period spans — a missing snapshot makes one return cover
-    // several months, which is not a monthly observation.
-    const spanMonths = (i) => {
-        let prev = -1;
-        for (const d of dataIdxs) {
-            if (d >= i) break;
-            prev = d;
-        }
-        if (prev < 0 || !monthIds[prev] || !monthIds[i]) return 1;
-        return Math.max(1, monthsBetween(monthIds[prev], monthIds[i]));
-    };
-    const monthlyEquivalent = (r, n) => ((n > 1 && (1 + r) > 0) ? Math.pow(1 + r, 1 / n) - 1 : r);
-    const real = measuredIdxs.map(i => monthlyEquivalent(monthlyYields[i], spanMonths(i)));
+    const real = measuredIdxs.map(i => monthlyEquivalentYield(monthlyYields[i], periodSpanMonths(i, monthIds, dataIdxs)));
 
-    // Annualise over elapsed calendar months, not over the number of periods: a
-    // missing middle snapshot makes one period cover two months.
+    // Annualise over the calendar months the MEASURED window covers, not over the
+    // number of periods (a missing middle snapshot makes one period cover two months)
+    // and not from the zero-km baseline (a bucket funded mid-year did not exist for
+    // the months before its first measured period).
     let monthsPassed = real.length;
-    const firstIdx = monthlyYields.findIndex(isValue);
-    let lastIdx = -1;
-    for (let i = monthlyYields.length - 1; i >= 0; i--) {
-        if (isValue(monthlyYields[i])) { lastIdx = i; break; }
-    }
-    if (firstIdx >= 0 && lastIdx >= firstIdx && monthIds[firstIdx] && monthIds[lastIdx]) {
+    const firstIdx = measuredIdxs.length ? measuredIdxs[0] : -1;
+    const lastIdx = measuredIdxs.length ? measuredIdxs[measuredIdxs.length - 1] : -1;
+    if (firstIdx >= 0 && monthIds[firstIdx] && monthIds[lastIdx]) {
         const priorData = dataIdxs.filter(i => i < firstIdx);
-        // A measured first entry already spans the previous month with data; a
-        // baseline entry is itself the zero point.
-        const anchorIdx = ((starts[firstIdx] || 0) > 0 && priorData.length)
-            ? priorData[priorData.length - 1] : firstIdx;
+        // A measured period already spans back to the previous month with data.
+        const anchorIdx = priorData.length ? priorData[priorData.length - 1] : firstIdx;
         const elapsed = monthsBetween(monthIds[anchorIdx], monthIds[lastIdx]);
         if (elapsed > 0) monthsPassed = elapsed;
     }
@@ -1102,7 +1119,14 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     // --- Projection (average-based, to end of year) ---
     // Skip the zero-km baseline and any month without a snapshot
     const baselineIdx = yields.findIndex(y => y !== null);
-    const realYields = yields.slice(baselineIdx + 1).filter(y => y !== null);
+    const realIdxs = [];
+    for (let i = baselineIdx + 1; i < yields.length; i++) {
+        if (yields[i] !== null) realIdxs.push(i);
+    }
+    // avgYield is compounded once per remaining MONTH below, so a period covering
+    // several months (missing snapshot, non-December anchor) enters as its monthly
+    // equivalent rather than as one month's return.
+    const realYields = realIdxs.map(i => monthlyEquivalentYield(yields[i], periodSpanMonths(i, monthIds, dataIdxs)));
     const realNetFlows = netFlows.slice(baselineIdx + 1).filter(n => n !== null);
     const avgYield = realYields.length > 0
         ? realYields.reduce((s, y) => s + y, 0) / realYields.length : 0;
