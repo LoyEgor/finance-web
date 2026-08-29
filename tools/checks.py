@@ -253,7 +253,15 @@ def clock_guard(target_filename, meta_date, today, prior_snapshot_dates, config)
 
 
 # ── recurring_guard ──────────────────────────────────────────────────────────
-def recurring_guard(transfers, config):
+def rent_amount(config, month):
+    """Expected rent for a YYYY-MM month from config.RECURRING (parity rule), or None."""
+    rule = (config.RECURRING or {}).get("rent_by_month_parity")
+    if not rule or not month:
+        return None
+    return rule.get("odd" if int(month[5:7]) % 2 else "even")
+
+
+def recurring_guard(transfers, config, month=None):
     """Two recurring-spend invariants from config.RECURRING (HINTS only -> flags):
       - rent: > config.RECURRING['rent_per_month'] home-cash withdraws in the
         period => duplicate flag (a withdraw from the cash-role venue, usd category).
@@ -281,12 +289,13 @@ def recurring_guard(transfers, config):
             "recurring_guard", "warn",
             f"duplicate rent: {len(rents)} home-cash withdraws this period (> {limit} expected).",
             {"rows": rents}))
+    expected = rent_amount(config, month)
     for r in rents:
         amt = float(r["amount"])
-        if rec.get("rent_amounts") and amt not in rec["rent_amounts"]:
+        if expected is not None and abs(amt - expected) > 0.01:
             out.append(_finding(
                 "recurring_guard", "info",
-                f"rent amount {amt:,.0f} outside usual {rec['rent_amounts']} — confirm (legit one-offs happen).",
+                f"rent amount {amt:,.0f} differs from the {month} rule ({expected:,.0f}) — confirm (legit one-offs happen).",
                 {"row": r}))
 
     # External funding (deposit) into the broker venue's usd line = the salary channel.
@@ -569,7 +578,8 @@ def run_all(ctx, config):
     # recurring_guard needs the pre-simplify rows; the simplified set has already
     # collapsed same-key withdraws, hiding a duplicate payment.
     if "raw_transfers" in ctx or "transfers" in ctx:
-        findings += recurring_guard(ctx.get("raw_transfers") or ctx.get("transfers"), config)
+        findings += recurring_guard(ctx.get("raw_transfers") or ctx.get("transfers"), config,
+                                    (ctx.get("meta_date") or "")[:7] or None)
     if {"prev_items", "cur_items", "transfers", "price_fn"} <= ctx.keys():
         findings += price_anchor(ctx["prev_items"], ctx["cur_items"], ctx["transfers"], ctx["price_fn"],
                                  config, ctx.get("anchor_venue"))
@@ -601,7 +611,8 @@ def _self_test():
     cfg = types.SimpleNamespace(
         VENUES={"Broker": {"method": "api", "role": "broker", "required_channels": []},
                 "Home": {"method": "manual", "role": "cash"}},
-        RECURRING={"salary_usd_approx": 3000, "rent_amounts": [500], "rent_per_month": 1},
+        RECURRING={"salary_usd_approx": 3000, "rent_by_month_parity": {"odd": 500, "even": 600},
+                   "rent_from": "Home", "rent_per_month": 1},
         ASSET_MAP={},
         STABLES={"USDT", "USDC", "DAI"},
         TOL={"dust_usd": 1.0, "stable_resid_usd": 2.0, "usd_band_pct": 0.015,

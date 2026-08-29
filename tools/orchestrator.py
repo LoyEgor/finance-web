@@ -201,6 +201,81 @@ def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None,
     return pool
 
 
+def suggest_transfers(month, ibkr, binance, fetched_items, coin_price_usd, config):
+    """Draft rows in the data/transfers-*.json schema from what the channels DO see:
+    broker trades and cash movements, exchange external legs, and the rent rule.
+    Internal moves no channel reports (copytrading <-> spot, exchange <-> exchange)
+    are the skill's job from the residual menu, so a draft is never the whole book."""
+    out = []
+    dust = config.TOL["dust_usd"]
+    cat_of = {(i["source"], i["name"]): i["category"] for i in fetched_items}
+    if ibkr:
+        venue, mod, data, since, until = ibkr
+        fx = data.get("fx") or {}
+        lo, hi = mod._ymd(since), mod._ymd(until)
+        net = {}
+        for t in mod.in_window(data["trades"], lo, hi):
+            rate = fx.get(t["currency"])
+            if rate is None:
+                continue  # already reported as unconverted by the fetcher
+            net[t["symbol"]] = net.get(t["symbol"], 0.0) + t["netCash"] * rate
+        cash = {"category": "usd", "source": venue, "name": "USD Cash"}
+        for sym, amt in sorted(net.items()):
+            if abs(amt) < dust:
+                continue
+            stock = {"category": cat_of.get((venue, sym), "stocks"), "source": venue, "name": sym}
+            src, dst = (cash, stock) if amt < 0 else (stock, cash)
+            out.append({"type": "move", "amount": round(abs(amt), 2),
+                        "from_category": src["category"], "from_source": src["source"], "from_name": src["name"],
+                        "to_category": dst["category"], "to_source": dst["source"], "to_name": dst["name"]})
+        for r in mod.in_window(data["deposits_withdrawals"], lo, hi):
+            rate = fx.get(r["currency"])
+            if rate is None or abs(r["amount"] * rate) < dust:
+                continue
+            amt = r["amount"] * rate
+            out.append({"type": "deposit" if amt > 0 else "withdraw", "amount": round(abs(amt), 2), **cash,
+                        "note": f"{abs(r['amount']):,.2f} {r['currency']} {r.get('desc') or ''}".strip()})
+    if binance:
+        venue, flows = binance
+        flows = flows or {}
+        converts = list(flows.get("converts", []))
+        usdt = {"category": "usd", "source": venue, "name": "USDT"}
+
+        def usd_value(row):
+            coin = (row.get("coin") or row.get("fiatCurrency") or "").upper()
+            amt = float(row.get("amount", 0.0))
+            if coin in config.STABLES:
+                return amt, f"{amt:,.2f} {coin}"
+            # A fiat leg is worth the stable amount converted into it, not the fiat face value.
+            for c in converts:
+                if c["to"] == coin and abs(c["toAmt"] - amt) < 0.01 and c["from"] in config.STABLES:
+                    converts.remove(c)
+                    return c["fromAmt"], f"{amt:,.2f} {coin} via {c['fromAmt']:,.2f} {c['from']}"
+            px = coin_price_usd(coin) if coin_price_usd else None
+            if px is None:
+                return None, f"{amt} {coin} (unpriced)"
+            return amt * px, f"{amt} {coin}"
+
+        for kind, bucket in (("withdraw", "withdrawals"), ("deposit", "deposits")):
+            for r in flows.get(bucket, []):
+                val, label = usd_value(r)
+                if val is None:
+                    continue
+                if kind == "withdraw" and (r.get("coin") or "").upper() in config.STABLES:  # fiat fee is inside the convert
+                    val += float(r.get("fee") or 0.0)
+                if val < dust:
+                    continue
+                out.append({"type": kind, "amount": round(val, 2), **usdt,
+                            "note": f"{r.get('source') or ''} {label}".strip()})
+    rent = checks.rent_amount(config, month)
+    cash_venue = checks._venue_by_role(config, "cash")
+    rent_from = config.RECURRING.get("rent_from")
+    if rent and cash_venue and rent_from:
+        out.append({"type": "withdraw", "amount": rent, "category": "usd", "source": cash_venue,
+                    "name": rent_from, "note": "rent"})
+    return out
+
+
 # ── reporting ────────────────────────────────────────────────────────────────
 SEV_ORDER = {"critical": 0, "warn": 1, "info": 2}
 SEV_TAG = {"critical": "!! CRITICAL", "warn": " ! FLAG    ", "info": "   ok      "}
@@ -513,6 +588,9 @@ def run_live(out_path=None, as_of=None):
     needed = needed_inputs_from_config()
     api_venues = {v for v, s in config.VENUES.items() if s.get("method") == "api"}
     candidate_items = list(fetched_items)
+    cash_venue = checks._venue_by_role(config, "cash")
+    rent_from = config.RECURRING.get("rent_from")
+    rent = checks.rent_amount(config, today[:7])
     for k, meta in prev["items"].items():
         spec = config.VENUES.get(meta["source"], {})
         # An api venue's no-API sleeve (e.g. copytrading) is never in fetched_items,
@@ -520,8 +598,13 @@ def run_live(out_path=None, as_of=None):
         sleeve = (meta["cat"] == reconcile.COPY_CAT and spec.get("screenshot_sleeves"))
         if meta["source"] in api_venues and not sleeve:
             continue
+        val = meta["val"]
+        if meta["source"] == cash_venue and meta["name"] == rent_from and rent:
+            val = round(val - rent, 2)
+            print(f"  {rent_from}: {meta['val']:,.0f} - rent {rent:,.0f} = {val:,.0f} "
+                  f"(config.RECURRING; say so if the cash differs).")
         candidate_items.append({"category": meta["cat"], "source": meta["source"],
-                                "name": meta["name"], "val": meta["val"]})
+                                "name": meta["name"], "val": val})
 
     curr = _snapshot_from_items(candidate_items, today, curr_month=today[:7])
 
@@ -572,10 +655,23 @@ def run_live(out_path=None, as_of=None):
     print("\n  NOTE: non-API venues above are carried-forward placeholders; the skill "
           "must replace them with the user's screenshot/cash values before writing.")
 
+    suggested = suggest_transfers(
+        today[:7], ibkr_ctx and (ibkr_ctx[0], ibkr_ctx[1], ibkr_ctx[2], since, today),
+        binance_ctx and (binance_ctx[0], binance_flows), fetched_items, coin_price_usd, config)
+    print("\n  SUGGESTED TRANSFERS (from fetched flows + rent rule; internal/no-API moves are "
+          "NOT here — add those from the residual menu):")
+    for t in suggested:
+        if t["type"] == "move":
+            print(f"    move     {t['amount']:>10,.2f}  {t['from_source']}/{t['from_name']} -> {t['to_source']}/{t['to_name']}")
+        else:
+            print(f"    {t['type']:8} {t['amount']:>10,.2f}  {t['source']}/{t['name']}  {t.get('note', '')}")
+    if not suggested:
+        print("    (none)")
+
     if out_path:
         draft = {"meta": {"date": today}, "fetched_items": fetched_items,
                  "candidate_items": candidate_items, "manifests": manifests,
-                 "transfers": transfers, "findings": findings}
+                 "transfers": transfers, "suggested_transfers": suggested, "findings": findings}
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         with open(out_path, "w") as fh:
             json.dump(draft, fh, ensure_ascii=False, indent=2)

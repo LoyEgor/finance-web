@@ -35,10 +35,19 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
 3. **Field-drift check.** On first run or unexpected shapes, sanity-check field names against
    the live payload (APIs rename fields).
 4. **Ingest screenshots / manual.** OCR screenshot-venue balances and no-API sleeve totals.
-   Physical cash: carry forward from last snapshot unless the user states a change.
+   Physical cash: carry forward from last snapshot unless the user states a change — except
+   the rent line (`config.RECURRING.rent_from`), which the orchestrator already lowered by
+   the month's rent (`rent_by_month_parity`); never ask about rent or cash.
+   Exchange overview screenshots include no-API sleeve wallets in their totals: a copytrading
+   sleeve held in a stable = overview total of that stable − the API's spot/funding/earn figure.
+   Salary: the deposit is whatever reaches the broker (its cash channel reports it, in the
+   period it settles); money the user keeps on a payout wallet (Zen) for spending is outside
+   the portfolio and is never recorded or asked about.
 5. **Assemble snapshot** (per category/source/name, in `config.BASE_CCY`).
-6. **Reconstruct transactions** from the delta vs previous snapshot + fetched flows, then
-   **simplify** (`tools/simplify_transfers.py`) to the minimal net set.
+6. **Reconstruct transactions.** Start from the orchestrator's `suggested_transfers` (broker
+   trades and cash movements, exchange external legs, rent) and add only the internal moves
+   no channel reports (copytrading ↔ spot, exchange ↔ exchange) from the delta vs previous
+   snapshot; then **simplify** (`tools/simplify_transfers.py`) to the minimal net set.
 7. **Reconcile + CHECK layer** (below).
 8. **Present** snapshot + transactions + flags for the user's confirmation; write files after,
    then run `tools/fetch_benchmarks.py` to fill the new date. Do not commit.

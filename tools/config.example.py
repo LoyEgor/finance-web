@@ -40,7 +40,6 @@ VENUES = {
                                         "convert"]},
     "ExchangeC": {"method": "screenshot"},
     "ExchangeD": {"method": "screenshot"},
-    "ExchangeE": {"method": "screenshot", "note": "currently ~zero; may return"},
     "Cash":      {"method": "manual",     "role": "cash",
                   "note": "physical cash; carry forward unless user states a change"},
 }
@@ -134,7 +133,10 @@ BENCHMARKS = ["VOO", "VT"]
 # placeholders — replace with your own in config.py.
 RECURRING = {
     "salary_usd_approx": 0,             # regular external funding -> broker (in USD)
-    "rent_amounts": [0],                # one rent payment per calendar month, from physical home cash
+    # Rent alternates by calendar-month parity and is paid from the home-cash line,
+    # so the orchestrator books it (and lowers that line) without asking.
+    "rent_by_month_parity": {"odd": 500, "even": 600},
+    "rent_from": "USD Cash (Home)",
     "rent_per_month": 1,                # >1 home-cash rent withdraw in a period = duplicate flag
     "living_p2p_usd_approx": 0,         # exchange P2P stable->local-fiat living cash-out (SELL side)
 }
