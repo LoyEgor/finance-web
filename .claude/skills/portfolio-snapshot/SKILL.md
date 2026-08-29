@@ -44,7 +44,8 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
    `deposit` of `salary_usd_approx` when `salary_day` falls in the period; a broker funding
    is a `move` from that line (its cash channel reports it in the period it settles); the
    line's residual (prev + salary − moves − stated balance) is living spend, booked as a
-   `withdraw` (wallet fees included). Read the wallet balance off the user's Zen screenshot
+   `withdraw` (wallet fees included). Salary and rent are MANDATORY every period: `recurring_guard`
+   flags a report missing either; a rule set to 0 in config switches it off — never ask about them. Read the wallet balance off the user's Zen screenshot
    and pass it as `--manual 'Zen/EUR Cash (Zen)=<EUR>EUR'`; money the Zen history shows sent to
    the broker but not yet in the broker's EOD statement is broker cash already — pass
    `--funded <EUR>EUR` and the orchestrator adds it to the broker cash line, books the move now,

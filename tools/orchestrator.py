@@ -23,7 +23,6 @@ BENCHMARKS / RECURRING / TOL / BASE_CCY). Nothing here hard-codes a ticker,
 venue, or amount.
 """
 import argparse
-import calendar
 import datetime
 import json
 import os
@@ -203,21 +202,6 @@ def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None,
     return pool
 
 
-def payday_in_period(period, day):
-    """True when a monthly payday (`day`, clamped to month length) falls in (since, until]."""
-    since, until = period
-    y, m = int(since[:4]), int(since[5:7])
-    while f"{y:04d}-{m:02d}" <= until[:7]:
-        last = calendar.monthrange(y, m)[1]
-        d = f"{y:04d}-{m:02d}-{min(day, last):02d}"
-        if since < d <= until:
-            return True
-        m += 1
-        if m > 12:
-            y, m = y + 1, 1
-    return False
-
-
 def salary_line(config):
     """(payout venue, line name) the salary lands on, or None without a payout venue."""
     venue = checks._venue_by_role(config, "payout")
@@ -267,7 +251,7 @@ def suggest_transfers(period, ibkr, binance, fetched_items, coin_price_usd, conf
     payout = salary_line(config)
     prebooked = list(prebooked)
     salary = config.RECURRING.get("salary_usd_approx")
-    if payout and salary and payday_in_period(period, config.RECURRING.get("salary_day", 1)):
+    if payout and salary and checks.payday_in_period(period, config.RECURRING.get("salary_day", 1)):
         out.append({"type": "deposit", "amount": float(salary), "category": "usd",
                     "source": payout[0], "name": payout[1], "note": "salary"})
     if ibkr:
