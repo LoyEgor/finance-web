@@ -44,9 +44,12 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
    `deposit` of `salary_usd_approx` when `salary_day` falls in the period; a broker funding
    is a `move` from that line (its cash channel reports it in the period it settles); the
    line's residual (prev + salary − moves − stated balance) is living spend, booked as a
-   `withdraw`. Read the wallet balance off the user's Zen screenshot and pass it as
-   `--manual 'Zen/EUR Cash (Zen)=<EUR>EUR'` — the orchestrator converts with the statement fx
-   and books all three rows; never ask how much was spent.
+   `withdraw` (wallet fees included). Read the wallet balance off the user's Zen screenshot
+   and pass it as `--manual 'Zen/EUR Cash (Zen)=<EUR>EUR'`; money the Zen history shows sent to
+   the broker but not yet in the broker statement goes on the in-transit line
+   (`--manual 'Zen/EUR in transit to IBKR=<EUR>EUR'`, `salary_transit`) — the orchestrator
+   books salary → transit now and transit → broker when the cashtx row settles; never ask how
+   much was spent.
 5. **Assemble snapshot** (per category/source/name, in `config.BASE_CCY`).
 6. **Reconstruct transactions.** Start from the orchestrator's `suggested_transfers` (broker
    trades and cash movements, exchange external legs, rent) and add only the internal moves

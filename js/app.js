@@ -2214,6 +2214,11 @@ function renderPortfolio(data, comparison = null) {
 // RENDER CHART (Category or Source mode)
 // ===========================================
 let lastChartData = null;
+// Chart.js morphs doughnut arcs by INDEX, so every month must emit the same
+// segment list in the same order (zero-value placeholders for what is absent),
+// or a vanished/new/re-sorted segment makes the wrong arcs grow and shrink.
+// Source order is first-seen across the session and never re-sorted.
+const chartSourceOrder = [];
 
 function renderChart() {
     const chartCanvas = document.getElementById('portfolioChart');
@@ -2253,10 +2258,12 @@ function renderChart() {
             });
         }
 
-        // Sort by total descending
-        const sorted = Object.entries(sourceMap).sort((a, b) => b[1].total - a[1].total);
+        Object.keys(sourceMap).forEach(src => {
+            if (!chartSourceOrder.includes(src)) chartSourceOrder.push(src);
+        });
         const defaultColors = ['#6366f1', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#64748b'];
-        sorted.forEach(([src, data], i) => {
+        chartSourceOrder.forEach((src, i) => {
+            const data = sourceMap[src] || { total: 0, prevTotal: 0 };
             chartLabels.push(src);
             chartSegmentNames.push(src);
             chartValues.push(data.total);
@@ -2276,7 +2283,15 @@ function renderChart() {
         });
     } else {
         // Category mode – split Stocks into 4 subgroup segments
-        categories.forEach(cat => {
+        const byId = Object.fromEntries(categories.map(c => [c.id, c]));
+        const catIds = Object.keys(globalCategories)
+            .sort((a, b) => (globalCategories[a].order ?? 999) - (globalCategories[b].order ?? 999));
+        categories.forEach(c => { if (!catIds.includes(c.id)) catIds.push(c.id); });
+        catIds.forEach(catId => {
+            const cat = byId[catId] || {
+                id: catId, title: globalCategories[catId]?.title || catId,
+                color: globalCategories[catId]?.color || '#a0aec0', items: [], total: 0
+            };
             if (cat.id === 'stocks') {
                 // Partition into subgroups for chart
                 const sgDefs = [
@@ -2302,20 +2317,20 @@ function renderChart() {
                 // the gap. Themes via CSS only, no JS involvement.
                 let firstSg = true;
                 sgDefs.forEach(sg => {
-                    if (sgBuckets[sg.key] <= 0) return;
-                    chartLabels.push(firstSg ? cat.title : sg.label);
+                    const val = sgBuckets[sg.key];
+                    chartLabels.push(firstSg && val > 0 ? cat.title : sg.label);
                     chartSegmentNames.push(sg.label);
-                    if (firstSg) firstSg = false;
-                    chartValues.push(sgBuckets[sg.key]);
+                    if (val > 0) firstSg = false;
+                    chartValues.push(val);
                     chartColors.push(cat.color);
                     chartBorderColors.push('transparent');
-                    chartBorderWidths.push(2);
+                    chartBorderWidths.push(val > 0 ? 2 : 0);
                     chartDeltas.push(null);
                 });
             } else {
                 chartLabels.push(cat.title);
                 chartSegmentNames.push(cat.title);
-                chartValues.push(cat.total);
+                chartValues.push(cat.total || 0);
                 chartColors.push(cat.color);
                 chartBorderColors.push('transparent');
                 chartBorderWidths.push(0);
@@ -2404,12 +2419,12 @@ function renderChart() {
                         usePointStyle: true,
                         padding: 15,
                         font: { size: 11 },
-                        filter: function (item) {
+                        filter: function (item, data) {
                             // Hide stocks sub-bucket labels; only the parent
                             // category title (e.g. "2. Stocks") shows in legend.
                             if (item.text.startsWith('ETF - ')) return false;
                             if (item.text === 'Companies') return false;
-                            return true;
+                            return (data.datasets[0].data[item.index] || 0) > 0;
                         }
                     },
                     // Legend click toggling is disabled — visual feedback (strikethrough)
