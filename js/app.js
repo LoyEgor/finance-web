@@ -3313,21 +3313,29 @@ function captureScrollAnchor() {
         return;
     }
     const scrollTop = window.scrollY || window.pageYOffset || 0;
+    // Anchor to the card that contains the viewport top (last card starting at or
+    // above it). Above the first card the viewport shows the header/chart, whose
+    // height is month-independent — keep the absolute offset there; anchoring to
+    // the nearest card would re-place the page by that card's month-specific top.
     let best = null;
     cards.forEach(el => {
         const top = getDocumentTop(el);
-        const distance = Math.abs(top - scrollTop);
-        if (best === null || distance < best.distance) {
-            best = { catId: el.dataset.catId, top, distance };
+        if (top <= scrollTop + 1 && (best === null || top > best.top)) {
+            best = { catId: el.dataset.catId, top };
         }
     });
     pendingScrollAnchor = best
         ? { catId: best.catId, offset: scrollTop - best.top }
-        : null;
+        : { catId: null, scrollTop };
 }
 
 function restoreScrollAnchor() {
     if (!pendingScrollAnchor) return;
+    if (pendingScrollAnchor.catId === null) {
+        window.scrollTo(0, pendingScrollAnchor.scrollTop);
+        pendingScrollAnchor = null;
+        return;
+    }
     const target = document.querySelector(
         `#portfolio-list .category-block[data-cat-id="${pendingScrollAnchor.catId}"]`
     );

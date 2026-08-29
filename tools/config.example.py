@@ -142,9 +142,6 @@ RECURRING = {
     "salary_usd_approx": 0,
     "salary_day": 27,
     "salary_to": "EUR Cash (Payout)",
-    # Money sent from the payout wallet that the broker statement has not settled yet
-    # (sent on/after the snapshot day) sits on this line until the cashtx row appears.
-    "salary_transit": "EUR in transit to broker",
     # Rent alternates by calendar-month parity and is paid from the home-cash line,
     # so the orchestrator books it (and lowers that line) without asking.
     "rent_by_month_parity": {"odd": 500, "even": 600},
