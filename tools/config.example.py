@@ -23,9 +23,11 @@ keep it current.
 # or add one freely — the logic iterates this dict, it doesn't assume names.
 #
 # role: a semantic tag the LOGIC keys off instead of a literal venue name, so
-#   checks.py stays venue-agnostic. "broker" = the venue salary/funding deposits
-#   land in and whose Flex NAV is checked; "cash" = physical home/office cash the
-#   rent withdraw comes from. At most one venue per role (first match wins).
+#   checks.py stays venue-agnostic. "broker" = the venue whose Flex NAV is checked
+#   and that the payout wallet is forwarded to; "payout" = the wallet salary lands
+#   in (its residual after forwarding is living spend — see RECURRING); "cash" =
+#   physical home/office cash the rent withdraw comes from. At most one venue per
+#   role (first match wins).
 # required_channels: for "api" venues, the EXACT money-movement manifest keys the
 #   fetcher emits (fetch_binance.flows() / fetch_ibkr --flows) that MUST be queried
 #   and span the period or coverage_gate fails CRITICAL. These are channel-key
@@ -42,6 +44,8 @@ VENUES = {
     "ExchangeD": {"method": "screenshot"},
     "Cash":      {"method": "manual",     "role": "cash",
                   "note": "physical cash; carry forward unless user states a change"},
+    "Payout":    {"method": "manual",     "role": "payout",
+                  "note": "balance from the payout-wallet screenshot"},
 }
 
 # Reporting/base currency. All snapshot values are stored in this currency.
@@ -132,7 +136,12 @@ BENCHMARKS = ["VOO", "VT"]
 # Keep loose; update when your life changes. Values below are illustrative
 # placeholders — replace with your own in config.py.
 RECURRING = {
-    "salary_usd_approx": 0,             # regular external funding -> broker (in USD)
+    # Salary is fixed in USD, lands on the payout-role venue's line `salary_to` around
+    # `salary_day`; whatever is not forwarded to the broker is living spend, so the
+    # orchestrator books deposit + moves + a residual withdraw from that line.
+    "salary_usd_approx": 0,
+    "salary_day": 27,
+    "salary_to": "EUR Cash (Payout)",
     # Rent alternates by calendar-month parity and is paid from the home-cash line,
     # so the orchestrator books it (and lowers that line) without asking.
     "rent_by_month_parity": {"odd": 500, "even": 600},

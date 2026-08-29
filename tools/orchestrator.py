@@ -23,9 +23,11 @@ BENCHMARKS / RECURRING / TOL / BASE_CCY). Nothing here hard-codes a ticker,
 venue, or amount.
 """
 import argparse
+import calendar
 import datetime
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 
@@ -201,14 +203,45 @@ def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None,
     return pool
 
 
-def suggest_transfers(month, ibkr, binance, fetched_items, coin_price_usd, config):
+def payday_in_period(period, day):
+    """True when a monthly payday (`day`, clamped to month length) falls in (since, until]."""
+    since, until = period
+    y, m = int(since[:4]), int(since[5:7])
+    while f"{y:04d}-{m:02d}" <= until[:7]:
+        last = calendar.monthrange(y, m)[1]
+        d = f"{y:04d}-{m:02d}-{min(day, last):02d}"
+        if since < d <= until:
+            return True
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    return False
+
+
+def salary_line(config):
+    """(payout venue, line name) the salary lands on, or None without a payout venue."""
+    venue = checks._venue_by_role(config, "payout")
+    name = config.RECURRING.get("salary_to")
+    return (venue, name) if venue and name else None
+
+
+def suggest_transfers(period, ibkr, binance, fetched_items, coin_price_usd, config):
     """Draft rows in the data/transfers-*.json schema from what the channels DO see:
-    broker trades and cash movements, exchange external legs, and the rent rule.
-    Internal moves no channel reports (copytrading <-> spot, exchange <-> exchange)
-    are the skill's job from the residual menu, so a draft is never the whole book."""
+    broker trades and cash movements, exchange external legs, and the rent/salary
+    rules. Internal moves no channel reports (copytrading <-> spot, exchange <->
+    exchange) are the skill's job from the residual menu, so a draft is never the
+    whole book. A broker deposit is booked as a move FROM the payout line: that is
+    the only place external funding comes from (see config VENUES role "payout")."""
     out = []
+    since, until = period
+    month = until[:7]
     dust = config.TOL["dust_usd"]
     cat_of = {(i["source"], i["name"]): i["category"] for i in fetched_items}
+    payout = salary_line(config)
+    salary = config.RECURRING.get("salary_usd_approx")
+    if payout and salary and payday_in_period(period, config.RECURRING.get("salary_day", 1)):
+        out.append({"type": "deposit", "amount": float(salary), "category": "usd",
+                    "source": payout[0], "name": payout[1], "note": "salary"})
     if ibkr:
         venue, mod, data, since, until = ibkr
         fx = data.get("fx") or {}
@@ -233,8 +266,14 @@ def suggest_transfers(month, ibkr, binance, fetched_items, coin_price_usd, confi
             if rate is None or abs(r["amount"] * rate) < dust:
                 continue
             amt = r["amount"] * rate
+            note = f"{abs(r['amount']):,.2f} {r['currency']} {r.get('desc') or ''}".strip()
+            if amt > 0 and payout:
+                out.append({"type": "move", "amount": round(amt, 2), "note": note,
+                            "from_category": "usd", "from_source": payout[0], "from_name": payout[1],
+                            "to_category": cash["category"], "to_source": cash["source"], "to_name": cash["name"]})
+                continue
             out.append({"type": "deposit" if amt > 0 else "withdraw", "amount": round(abs(amt), 2), **cash,
-                        "note": f"{abs(r['amount']):,.2f} {r['currency']} {r.get('desc') or ''}".strip()})
+                        "note": note})
     if binance:
         venue, flows = binance
         flows = flows or {}
@@ -273,6 +312,54 @@ def suggest_transfers(month, ibkr, binance, fetched_items, coin_price_usd, confi
     if rent and cash_venue and rent_from:
         out.append({"type": "withdraw", "amount": rent, "category": "usd", "source": cash_venue,
                     "name": rent_from, "note": "rent"})
+    return out
+
+
+def living_withdraw(prev, candidate_items, suggested, manual_keys, config):
+    """The payout line's residual rule: prev + salary in - moves out - stated balance =
+    living spend, booked as a withdraw. Only computable when the user STATED the
+    balance (--manual); a carried-forward value would book salary - moves as spend.
+    Returns (row or None, warning or None)."""
+    payout = salary_line(config)
+    if not payout or payout not in manual_keys:
+        return None, None
+    key = reconcile.asset_key(reconcile.STABLE_CAT, *payout)
+    prev_val = prev["items"].get(key, {}).get("val", 0.0)
+    curr_val = next(i["val"] for i in candidate_items if (i["source"], i["name"]) == payout)
+    inflow = sum(t["amount"] for t in suggested
+                 if t["type"] == "deposit" and (t["source"], t["name"]) == payout)
+    outflow = sum(t["amount"] for t in suggested
+                  if t["type"] == "move" and (t["from_source"], t["from_name"]) == payout)
+    living = round(prev_val + inflow - outflow - curr_val, 2)
+    if living < -config.TOL["dust_usd"]:
+        return None, (f"{payout[0]}/{payout[1]}: balance grew by {-living:,.2f} beyond salary - moves "
+                      f"({prev_val:,.2f} + {inflow:,.2f} - {outflow:,.2f} -> {curr_val:,.2f}); "
+                      "an unrecorded inflow — ask, never book it.")
+    if living < config.TOL["dust_usd"]:
+        return None, None
+    return {"type": "withdraw", "amount": living, "category": "usd", "source": payout[0],
+            "name": payout[1], "note": "living (payout residual rule)"}, None
+
+
+def parse_manual(specs, fx, config):
+    """--manual 'Source/Name=AMOUNT[CCY]' -> {(source, name): (usd value, label)}.
+    A non-base currency is converted with the broker statement's fx map, so a
+    payout-wallet EUR balance is stated as read off the screenshot."""
+    out = {}
+    for spec in specs or []:
+        m = re.fullmatch(r"\s*([^/=]+?)\s*/\s*([^=]+?)\s*=\s*([-+]?[\d,]*\.?\d+)\s*([A-Za-z]{3})?\s*", spec)
+        if not m:
+            raise SystemExit(f"--manual {spec!r}: expected 'Source/Name=AMOUNT[CCY]' (e.g. 'Zen/EUR Cash (Zen)=4295.52EUR')")
+        source, name, amount, ccy = m.group(1), m.group(2), float(m.group(3).replace(",", "")), (m.group(4) or config.BASE_CCY).upper()
+        if source not in config.VENUES:
+            raise SystemExit(f"--manual {spec!r}: unknown venue {source!r} (config.VENUES)")
+        if ccy == config.BASE_CCY:
+            out[(source, name)] = (round(amount, 2), f"{amount:,.2f} {ccy}")
+            continue
+        rate = (fx or {}).get(ccy)
+        if rate is None:
+            raise SystemExit(f"--manual {spec!r}: no {ccy} rate in the broker statement fx map — state it in {config.BASE_CCY}")
+        out[(source, name)] = (round(amount * rate, 2), f"{amount:,.2f} {ccy} x {rate}")
     return out
 
 
@@ -329,7 +416,7 @@ def needed_inputs_from_config():
             out.append(f"{venue}: paste balance screenshot{note}")
         elif spec.get("method") == "manual":
             note = f"  ({spec['note']})" if spec.get("note") else ""
-            out.append(f"{venue}: state value{note}")
+            out.append(f"{venue}: state value via --manual '{venue}/<line>=<amount><CCY>'{note}")
         for sleeve in spec.get("screenshot_sleeves", []):
             out.append(f"{venue} {sleeve}: no-API sleeve — paste screenshot total")
     return out
@@ -407,7 +494,7 @@ def run_validate(out_path=None):
     return findings
 
 
-def run_live(out_path=None, as_of=None):
+def run_live(out_path=None, as_of=None, manual=None):
     """Live pipeline: iterate config.VENUES api venues, run their fetchers, assemble
     the candidate snapshot, reconcile vs previous month, run checks. Requires keys
     in tools/.env; this path makes signed calls and is NOT exercised in --validate.
@@ -591,6 +678,7 @@ def run_live(out_path=None, as_of=None):
     cash_venue = checks._venue_by_role(config, "cash")
     rent_from = config.RECURRING.get("rent_from")
     rent = checks.rent_amount(config, today[:7])
+    stated = parse_manual(manual, (ibkr_ctx[2].get("fx") if ibkr_ctx else None), config)
     for k, meta in prev["items"].items():
         spec = config.VENUES.get(meta["source"], {})
         # An api venue's no-API sleeve (e.g. copytrading) is never in fetched_items,
@@ -599,12 +687,19 @@ def run_live(out_path=None, as_of=None):
         if meta["source"] in api_venues and not sleeve:
             continue
         val = meta["val"]
-        if meta["source"] == cash_venue and meta["name"] == rent_from and rent:
+        if (meta["source"], meta["name"]) in stated:
+            val, label = stated.pop((meta["source"], meta["name"]))
+            print(f"  {meta['source']}/{meta['name']}: {label} = {val:,.2f} (--manual)")
+        elif meta["source"] == cash_venue and meta["name"] == rent_from and rent:
             val = round(val - rent, 2)
             print(f"  {rent_from}: {meta['val']:,.0f} - rent {rent:,.0f} = {val:,.0f} "
                   f"(config.RECURRING; say so if the cash differs).")
         candidate_items.append({"category": meta["cat"], "source": meta["source"],
                                 "name": meta["name"], "val": val})
+    if stated:
+        raise SystemExit("--manual names line(s) absent from the previous snapshot: "
+                         + ", ".join(f"{s}/{n}" for s, n in stated)
+                         + " — a NEW line is added by hand in the snapshot file, not by override.")
 
     curr = _snapshot_from_items(candidate_items, today, curr_month=today[:7])
 
@@ -656,9 +751,17 @@ def run_live(out_path=None, as_of=None):
           "must replace them with the user's screenshot/cash values before writing.")
 
     suggested = suggest_transfers(
-        today[:7], ibkr_ctx and (ibkr_ctx[0], ibkr_ctx[1], ibkr_ctx[2], since, today),
+        (since, today), ibkr_ctx and (ibkr_ctx[0], ibkr_ctx[1], ibkr_ctx[2], since, today),
         binance_ctx and (binance_ctx[0], binance_flows), fetched_items, coin_price_usd, config)
-    print("\n  SUGGESTED TRANSFERS (from fetched flows + rent rule; internal/no-API moves are "
+    manual_keys = set(parse_manual(manual, (ibkr_ctx[2].get("fx") if ibkr_ctx else None), config))
+    living, living_warn = living_withdraw(prev, candidate_items, suggested, manual_keys, config)
+    if living:
+        suggested.append(living)
+    if living_warn:
+        print(f"\n  ! {living_warn}")
+    elif salary_line(config) and salary_line(config) not in manual_keys:
+        print(f"\n  {'/'.join(salary_line(config))}: carried forward — pass --manual to book living spend.")
+    print("\n  SUGGESTED TRANSFERS (from fetched flows + rent/salary rules; internal/no-API moves are "
           "NOT here — add those from the residual menu):")
     for t in suggested:
         if t["type"] == "move":
@@ -687,12 +790,15 @@ def main():
     ap.add_argument("--as-of", dest="as_of",
                     help="date the snapshot at this last-settled day (YYYY-MM-DD) instead of today, "
                          "for when the broker statement doesn't cover today yet")
+    ap.add_argument("--manual", action="append", metavar="Source/Name=AMOUNT[CCY]",
+                    help="stated balance of a manual/screenshot line, e.g. 'Zen/EUR Cash (Zen)=4295.52EUR' "
+                         "(non-base currency converted with the broker statement fx); repeatable")
     args = ap.parse_args()
 
     if args.validate:
         run_validate(args.out)
     else:
-        run_live(args.out, as_of=args.as_of)
+        run_live(args.out, as_of=args.as_of, manual=args.manual)
 
 
 if __name__ == "__main__":

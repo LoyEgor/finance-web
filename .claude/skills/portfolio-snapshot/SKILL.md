@@ -40,9 +40,13 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
    the month's rent (`rent_by_month_parity`); never ask about rent or cash.
    Exchange overview screenshots include no-API sleeve wallets in their totals: a copytrading
    sleeve held in a stable = overview total of that stable − the API's spot/funding/earn figure.
-   Salary: the deposit is whatever reaches the broker (its cash channel reports it, in the
-   period it settles); money the user keeps on a payout wallet (Zen) for spending is outside
-   the portfolio and is never recorded or asked about.
+   Salary lands on the payout-role venue's line (`config.RECURRING.salary_to`, Zen) as a
+   `deposit` of `salary_usd_approx` when `salary_day` falls in the period; a broker funding
+   is a `move` from that line (its cash channel reports it in the period it settles); the
+   line's residual (prev + salary − moves − stated balance) is living spend, booked as a
+   `withdraw`. Read the wallet balance off the user's Zen screenshot and pass it as
+   `--manual 'Zen/EUR Cash (Zen)=<EUR>EUR'` — the orchestrator converts with the statement fx
+   and books all three rows; never ask how much was spent.
 5. **Assemble snapshot** (per category/source/name, in `config.BASE_CCY`).
 6. **Reconstruct transactions.** Start from the orchestrator's `suggested_transfers` (broker
    trades and cash movements, exchange external legs, rent) and add only the internal moves

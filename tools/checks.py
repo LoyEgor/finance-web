@@ -265,8 +265,9 @@ def recurring_guard(transfers, config, month=None):
     """Two recurring-spend invariants from config.RECURRING (HINTS only -> flags):
       - rent: > config.RECURRING['rent_per_month'] home-cash withdraws in the
         period => duplicate flag (a withdraw from the cash-role venue, usd category).
-      - salary: an external deposit into the broker-role venue far from
-        salary_usd_approx => flag (raise/cut/partial month or a mis-entry).
+      - salary: an external deposit into the payout-role venue (broker-role when
+        there is none) far from salary_usd_approx => flag (raise/cut/partial month
+        or a mis-entry).
 
     Venues are resolved by config role markers, not by literal name.
 
@@ -298,10 +299,11 @@ def recurring_guard(transfers, config, month=None):
                 f"rent amount {amt:,.0f} differs from the {month} rule ({expected:,.0f}) — confirm (legit one-offs happen).",
                 {"row": r}))
 
-    # External funding (deposit) into the broker venue's usd line = the salary channel.
+    # External funding (deposit) into the salary venue's usd line = the salary channel.
     salary = rec.get("salary_usd_approx")
+    salary_venue = _venue_by_role(config, "payout") or broker_venue
     for t in transfers:
-        if t.get("type") != "deposit" or not broker_venue or t.get("source") != broker_venue:
+        if t.get("type") != "deposit" or not salary_venue or t.get("source") != salary_venue:
             continue
         if t.get("category") != reconcile.STABLE_CAT:
             continue
@@ -309,7 +311,7 @@ def recurring_guard(transfers, config, month=None):
         if salary and abs(amt - salary) > 0.5 * salary:
             out.append(_finding(
                 "recurring_guard", "info",
-                f"{broker_venue} funding {amt:,.0f} far from expected salary ~{salary:,.0f} — "
+                f"{salary_venue} funding {amt:,.0f} far from expected salary ~{salary:,.0f} — "
                 f"raise/cut/partial month or a mis-entry; confirm.",
                 {"row": t, "expected": salary}))
     return out
