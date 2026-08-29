@@ -101,10 +101,15 @@ def _ymd(s):
     raw = (s or "").strip()
     if not raw:
         return ""
-    s = re.split(r"[;T ]", raw, 1)[0]
+    # A time suffix is separated by ';', a space, or a 'T' that follows a COMPLETE
+    # date — never a bare 'T', which also sits inside the month tokens OCT and DEC.
+    s = re.split(r"[; ]", raw, 1)[0]
+    s = re.sub(r"^(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}|\d{8})T.*$", r"\1", s)
     digits = s.replace("-", "").replace("/", "")
-    if len(digits) == 8 and digits.isdigit():
-        return digits[4:] + digits[:4] if "/" in s else digits  # MMddyyyy -> yyyyMMdd
+    # >= 8: the "no separator" Flex setting emits YYYYMMDDhhmmss as one digit run.
+    if len(digits) >= 8 and digits.isdigit():
+        head = digits[:8]
+        return head[4:] + head[:4] if "/" in s else head  # MMddyyyy -> yyyyMMdd
     m = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})", s)
     if m and m.group(2).upper() in _MONTHS:
         day, mon, year = m.group(1), _MONTHS[m.group(2).upper()], m.group(3)
@@ -187,20 +192,25 @@ def parse(root):
     return out
 
 
-def to_snapshot_items(data):
-    """IBKR positions + cash as snapshot rows: {category, source, name, val, perf}."""
+def to_snapshot_items(data, venue="IBKR"):
+    """Broker positions + cash as snapshot rows: {category, source, name, val, perf}.
+
+    `venue` must be the name this broker carries in config.VENUES: a row tagged with
+    anything else is not recognised as an api venue, so the orchestrator ALSO carries
+    the previous month's broker rows forward and every broker total is counted twice.
+    """
     items = []
     for p in data["positions"]:
         if p["assetCategory"] == "CASH":
             continue  # cash is taken from CashReport below; emitting both double-counts it
-        items.append({"category": "stocks", "source": "IBKR", "name": p["symbol"],  # missing category → stocks
+        items.append({"category": "stocks", "source": venue, "name": p["symbol"],  # missing category → stocks
                       "val": p["value_usd"], "qty": p["quantity"], "unrealizedPnl": p["unrealizedPnl"]})
-    # USD is the base currency; consolidate ALL IBKR cash (any currency) into one USD line.
+    # USD is the base currency; consolidate ALL broker cash (any currency) into one USD line.
     total = data["base_cash"]
     if total is None:
         total = sum(c["endingCash"] * data["fx"].get(c["currency"], 1.0) for c in data["cash"])
     if abs(total) >= 0.005:
-        items.append({"category": "usd", "source": "IBKR", "name": "USD Cash", "val": round(total, 2)})
+        items.append({"category": "usd", "source": venue, "name": "USD Cash", "val": round(total, 2)})
     return items
 
 
@@ -265,14 +275,25 @@ def main():
         income_in = in_window(data["income"], since, until)
 
         net = defaultdict(float)
+        unconverted = []
         for t in trades_in:
-            # netCash is after commission and tax (proceeds is not), and a non-base
-            # row must be converted or it is summed into USD totals at 1:1.
-            net[t["symbol"]] += t["netCash"] * (data["fx"].get(t["currency"]) or 1.0)
+            # netCash is after commission and tax (proceeds is not). A currency with no
+            # ConversionRate row cannot enter the base-ccy sum: at 1:1 it would silently
+            # distort the total, which is the very failure this conversion exists to avoid.
+            rate = data["fx"].get(t["currency"])
+            if rate is None:
+                unconverted.append(t)
+                continue
+            net[t["symbol"]] += t["netCash"] * rate
         print(f"IBKR trades in {win} (net cash per symbol, base ccy; + = sold to cash, - = bought):")
         for sym in sorted(net, key=lambda s: net[s]):
             if abs(net[sym]) >= 0.5:
                 print(f"  {sym:8} {net[sym]:>+12,.2f}  ({'sold→USD Cash' if net[sym] > 0 else 'USD Cash→bought'})")
+        if unconverted:
+            print(f"  !! WARN: {len(unconverted)} trade(s) in a currency with NO ConversionRate row — "
+                  f"EXCLUDED from the net above (never assumed 1:1); convert them by hand:")
+            for t in unconverted:
+                print(f"     {t['symbol']:8} {t['netCash']:>+12,.2f} {t['currency'] or '?':4} [{_ymd(t['date'])}]")
 
         print(f"\nIBKR cash deposits/withdrawals in {win}:")
         for r in cashtx_in:

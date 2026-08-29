@@ -553,27 +553,32 @@ function updateForecastUI(stats) {
 
 // 1. Fetch data for all months from Jan to current
 async function fetchYearSequence(currentMonthId) {
-    const year = currentMonthId.split('-')[0];
-    const monthIndex = parseInt(currentMonthId.split('-')[1]);
+    const year = parseInt(currentMonthId.split('-')[0], 10);
+    const monthIndex = parseInt(currentMonthId.split('-')[1], 10);
 
-    // Fetch in parallel
-    const promises = [];
+    const ids = [];
+    // The previous December anchors the first return of a later year: without it
+    // January is forced to the zero-km baseline while the stats bar already shows a
+    // real month-over-month P&L against December.
+    const anchorId = year > START_DATE.getFullYear() ? `${year - 1}-12` : null;
+    if (anchorId) ids.push(anchorId);
     for (let m = 1; m <= monthIndex; m++) {
-        const id = `${year}-${String(m).padStart(2, '0')}`;
-        promises.push(Promise.all([
-            fetchPortfolioData(id),
-            fetchTransfersForMonth(id)
-        ]).then(([data, transferGroups]) => ({
-            id,
-            data,
-            transferGroups // Preserve groups with dates for date-based filtering
-        })));
+        ids.push(`${year}-${String(m).padStart(2, '0')}`);
     }
 
-    const results = await Promise.all(promises);
+    const results = await Promise.all(ids.map(id => Promise.all([
+        fetchPortfolioData(id),
+        fetchTransfersForMonth(id)
+    ]).then(([data, transferGroups]) => ({
+        id,
+        data,
+        transferGroups // Preserve groups with dates for date-based filtering
+    }))));
 
     // Sort by id ensures Jan -> Feb -> ...
-    return results.sort((a, b) => a.id.localeCompare(b.id));
+    return results
+        .filter(r => r.id !== anchorId || r.data)
+        .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 // Simple Yield: profit relative to invested capital.
@@ -623,6 +628,18 @@ function calculateProjectedAnnual(ytd, monthsPassed) {
     if (base <= 0) return -1;
 
     return Math.pow(base, exponent) - 1;
+}
+
+// benchmarks.json is date-keyed and sparse — a snapshot date often has no quote of
+// its own, and dropping the comparison blanks the whole alpha column.
+function benchmarkPriceAt(prices, date) {
+    if (!prices || !date) return null;
+    if (prices[date]) return prices[date];
+    let best = null;
+    for (const d of Object.keys(prices)) {
+        if (d <= date && (best === null || d > best)) best = d;
+    }
+    return best === null ? null : prices[best];
 }
 
 // Helper: build per-category transfer list (includes moves as deposit/withdraw)
@@ -719,17 +736,44 @@ function stdDev(arr) {
 // Compute YTD / annualised vol / Sharpe-style ratio for a bucket from
 // the stored monthly yields and compounded series.
 // Risk-free rate: 3.5% annual (matches the Deposit benchmark used elsewhere).
-function bucketStats(monthlyYields, compoundedSeries) {
+function bucketStats(monthlyYields, compoundedSeries, periodStarts, ctx) {
     if (!monthlyYields || monthlyYields.length === 0) {
         return { ytd: null, vol: null, sharpe: null, monthsTracked: 0 };
     }
-    // Skip the zero-km baseline (first month with data) and any nulls.
-    const baselineIdx = monthlyYields.findIndex(y => y !== null && y !== undefined);
-    const real = monthlyYields.slice(baselineIdx + 1).filter(y => y !== null && y !== undefined && isFinite(y));
-    const ytd = (compoundedSeries && compoundedSeries.length)
-        ? (compoundedSeries[compoundedSeries.length - 1] ?? null) : null;
-    // Annualise over return periods, not calendar months: the baseline yields nothing.
-    const monthsPassed = real.length;
+    const starts = periodStarts || [];
+    const monthIds = ctx?.monthIds || [];
+    const dataIdxs = ctx?.dataIdxs || [];
+    const isValue = (v) => v !== null && v !== undefined;
+
+    // Only a period the bucket carried value into is a measured return: the zero-km
+    // baseline and a bucket funded from zero inside the period have no start to
+    // measure against, whichever month they fall in.
+    const real = monthlyYields.filter((y, i) => isValue(y) && isFinite(y) && (starts[i] || 0) > 0);
+
+    let ytd = null;
+    if (compoundedSeries) {
+        for (let i = compoundedSeries.length - 1; i >= 0; i--) {
+            if (isValue(compoundedSeries[i])) { ytd = compoundedSeries[i]; break; }
+        }
+    }
+
+    // Annualise over elapsed calendar months, not over the number of periods: a
+    // missing middle snapshot makes one period cover two months.
+    let monthsPassed = real.length;
+    const firstIdx = monthlyYields.findIndex(isValue);
+    let lastIdx = -1;
+    for (let i = monthlyYields.length - 1; i >= 0; i--) {
+        if (isValue(monthlyYields[i])) { lastIdx = i; break; }
+    }
+    if (firstIdx >= 0 && lastIdx >= firstIdx && monthIds[firstIdx] && monthIds[lastIdx]) {
+        const priorData = dataIdxs.filter(i => i < firstIdx);
+        // A measured first entry already spans the previous month with data; a
+        // baseline entry is itself the zero point.
+        const anchorIdx = ((starts[firstIdx] || 0) > 0 && priorData.length)
+            ? priorData[priorData.length - 1] : firstIdx;
+        const elapsed = monthsBetween(monthIds[anchorIdx], monthIds[lastIdx]);
+        if (elapsed > 0) monthsPassed = elapsed;
+    }
 
     let vol = null;
     let sharpe = null;
@@ -780,11 +824,16 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     // --- Series tracking ---
     const monthLabels = [];
     const categoryYields = {}; // catId -> [monthly yields]
+    // Value each bucket carried into the period, by index. Sparse on purpose:
+    // a missing entry means "nothing carried in", i.e. no measurable return.
+    const categoryStarts = {};
     const benchmarkYields = { vt: [], voo: [], deposit: [] };
+    const benchmarkStarts = { vt: [], voo: [], deposit: [] };
     // Stocks sub-buckets: companies / ETF regions / ETF total
     const SUB_STOCK_KEYS = ['stocks_companies', 'stocks_etf_us', 'stocks_etf_europe', 'stocks_etf_asia', 'stocks_etf'];
     const subStocksYields = {};
-    SUB_STOCK_KEYS.forEach(k => { subStocksYields[k] = []; });
+    const subStocksStarts = {};
+    SUB_STOCK_KEYS.forEach(k => { subStocksYields[k] = []; subStocksStarts[k] = []; });
     let prevSubStocksBalances = {};
     SUB_STOCK_KEYS.forEach(k => { prevSubStocksBalances[k] = 0; });
     let prevCategoryBalances = {};
@@ -795,7 +844,10 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     // Iterate sequentially through months to build the chain
     let prevSnapshotDate = null;
     let baselineDone = false; // the first month WITH data is the zero-km baseline
-    let dataMonths = 0;
+    const monthIds = sequence.map(item => item.id);
+    const dataIdxs = [];
+    let baselineMonthId = null;
+    let lastDataMonthId = null;
     for (let idx = 0; idx < sequence.length; idx++) {
         const item = sequence[idx];
 
@@ -818,7 +870,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
 
         const endBalance = calculateTotalBalance(item.data);
         const startBalance = prevBalance;
-        const currentSnapshotDate = item.data.meta?.date || `${item.id}-31`;
+        const currentSnapshotDate = item.data.meta?.date || defaultSnapshotDate(item.id);
 
         // Date-based transfer filtering:
         // Keep transfers whose date falls in the current period
@@ -873,6 +925,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         allCatIds.forEach(catId => {
             if (!categoryYields[catId]) {
                 categoryYields[catId] = new Array(idx).fill(null);
+                categoryStarts[catId] = [];
             }
         });
 
@@ -883,7 +936,9 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         // ZERO KILOMETER LOGIC FOR FORECAST — the first month that has data
         const isBaseline = !baselineDone;
         baselineDone = true;
+        lastDataMonthId = item.id;
         if (isBaseline) {
+            baselineMonthId = item.id;
             yieldVal = 0;
             profitVal = 0;
             accumulatedNetFlow += endBalance;
@@ -898,6 +953,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             allCatIds.forEach(catId => {
                 const catStart = prevCategoryBalances[catId] || 0;
                 const catEnd = currCategoryBalances[catId] || 0;
+                categoryStarts[catId][idx] = catStart;
                 if (catStart === 0 && catEnd === 0) {
                     categoryYields[catId].push(null);
                     return;
@@ -917,6 +973,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             SUB_STOCK_KEYS.forEach(subKey => {
                 const subStart = prevSubStocksBalances[subKey] || 0;
                 const subEnd = currSubStocksBalances[subKey] || 0;
+                subStocksStarts[subKey][idx] = subStart;
                 if (subStart === 0 && subEnd === 0) {
                     subStocksYields[subKey].push(null);
                     return;
@@ -942,20 +999,23 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             const daysDiff = (d1 - d0) / (1000 * 60 * 60 * 24);
             const depositMonth = Math.pow(1 + 0.035, daysDiff / 365) - 1;
             benchmarkYields.deposit.push(depositMonth);
+            benchmarkStarts.deposit[idx] = 1;
 
             const vtPrices = benchmarksData?.['VT'] || {};
             const vooPrices = benchmarksData?.['VOO'] || {};
-            const vtPrev = vtPrices[prevSnapshotDate];
-            const vtCurr = vtPrices[currentSnapshotDate];
-            const vooPrev = vooPrices[prevSnapshotDate];
-            const vooCurr = vooPrices[currentSnapshotDate];
+            const vtPrev = benchmarkPriceAt(vtPrices, prevSnapshotDate);
+            const vtCurr = benchmarkPriceAt(vtPrices, currentSnapshotDate);
+            const vooPrev = benchmarkPriceAt(vooPrices, prevSnapshotDate);
+            const vooCurr = benchmarkPriceAt(vooPrices, currentSnapshotDate);
+            benchmarkStarts.vt[idx] = vtPrev || 0;
+            benchmarkStarts.voo[idx] = vooPrev || 0;
             benchmarkYields.vt.push((vtPrev && vtCurr) ? (vtCurr / vtPrev - 1) : null);
             benchmarkYields.voo.push((vooPrev && vooCurr) ? (vooCurr / vooPrev - 1) : null);
         }
 
         yields.push(yieldVal);
         netFlows.push(isBaseline ? 0 : mNetFlow);
-        dataMonths++;
+        dataIdxs.push(idx);
 
         if (item.id === currentMonthId) {
             currentMonthYield = yieldVal;
@@ -982,10 +1042,11 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     const currentEndBalance = prevBalance;
     const ytdProfit = currentEndBalance - accumulatedNetFlow;
 
-    // Projected Annual: annualise over the real return periods (months with data
-    // minus the zero-km baseline), not over elapsed calendar months.
-    const returnPeriods = Math.max(0, dataMonths - 1);
-    const projected = calculateProjectedAnnual(ytd, returnPeriods);
+    // Projected Annual: annualise over the calendar months elapsed since the zero-km
+    // baseline, so a missing middle snapshot does not shorten the span the YTD covers.
+    const monthsElapsed = (baselineMonthId && lastDataMonthId)
+        ? Math.max(0, monthsBetween(baselineMonthId, lastDataMonthId)) : 0;
+    const projected = calculateProjectedAnnual(ytd, monthsElapsed);
 
     // Projected Profit: the projected return applied to the invested capital the
     // percentage is measured on — the end balance already contains the YTD gain.
@@ -1001,7 +1062,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     const avgNetFlow = realNetFlows.length > 0
         ? realNetFlows.reduce((s, n) => s + n, 0) / realNetFlows.length : 0;
 
-    const remainingMonths = Math.max(0, 12 - sequence.length);
+    const remainingMonths = Math.max(0, 12 - parseInt(currentMonthId.split('-')[1], 10));
 
     let projectedEndBalance = currentEndBalance;
     for (let m = 0; m < remainingMonths; m++) {
@@ -1043,21 +1104,22 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     });
 
     // --- Performance comparison table data ---
+    const statsCtx = { monthIds, dataIdxs };
     const performanceTable = {
-        companies:    bucketStats(subStocksYields.stocks_companies,   subStocksSeries.stocks_companies),
-        etf_total:    bucketStats(subStocksYields.stocks_etf,         subStocksSeries.stocks_etf),
-        etf_us:       bucketStats(subStocksYields.stocks_etf_us,      subStocksSeries.stocks_etf_us),
-        etf_europe:   bucketStats(subStocksYields.stocks_etf_europe,  subStocksSeries.stocks_etf_europe),
-        etf_asia:     bucketStats(subStocksYields.stocks_etf_asia,    subStocksSeries.stocks_etf_asia),
-        stocks_total: bucketStats(categoryYields.stocks || [],        categorySeries.stocks || []),
-        vt:           bucketStats(benchmarkYields.vt,                 benchmarkSeries.vt),
-        voo:          bucketStats(benchmarkYields.voo,                benchmarkSeries.voo)
+        companies:    bucketStats(subStocksYields.stocks_companies,   subStocksSeries.stocks_companies,  subStocksStarts.stocks_companies,  statsCtx),
+        etf_total:    bucketStats(subStocksYields.stocks_etf,         subStocksSeries.stocks_etf,        subStocksStarts.stocks_etf,        statsCtx),
+        etf_us:       bucketStats(subStocksYields.stocks_etf_us,      subStocksSeries.stocks_etf_us,     subStocksStarts.stocks_etf_us,     statsCtx),
+        etf_europe:   bucketStats(subStocksYields.stocks_etf_europe,  subStocksSeries.stocks_etf_europe, subStocksStarts.stocks_etf_europe, statsCtx),
+        etf_asia:     bucketStats(subStocksYields.stocks_etf_asia,    subStocksSeries.stocks_etf_asia,   subStocksStarts.stocks_etf_asia,   statsCtx),
+        stocks_total: bucketStats(categoryYields.stocks || [],        categorySeries.stocks || [],       categoryStarts.stocks || [],       statsCtx),
+        vt:           bucketStats(benchmarkYields.vt,                 benchmarkSeries.vt,                benchmarkStarts.vt,                statsCtx),
+        voo:          bucketStats(benchmarkYields.voo,                benchmarkSeries.voo,               benchmarkStarts.voo,               statsCtx)
     };
     // Other categories (Safe, Cash/USD, Crypto, Copytrading) — for the toggleable
     // "compare-with-anything" rows in the table.
     ['safe', 'usd', 'crypto', 'copy'].forEach(catId => {
         if (categoryYields[catId]) {
-            performanceTable[catId] = bucketStats(categoryYields[catId], categorySeries[catId]);
+            performanceTable[catId] = bucketStats(categoryYields[catId], categorySeries[catId], categoryStarts[catId], statsCtx);
         }
     });
 
@@ -1085,10 +1147,10 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         const vtPrices = benchmarksData['VT'] || {};
         const vooPrices = benchmarksData['VOO'] || {};
 
-        const vtPrev = vtPrices[currentMonthPrevDate];
-        const vtCurr = vtPrices[currentMonthCurrDate];
-        const vooPrev = vooPrices[currentMonthPrevDate];
-        const vooCurr = vooPrices[currentMonthCurrDate];
+        const vtPrev = benchmarkPriceAt(vtPrices, currentMonthPrevDate);
+        const vtCurr = benchmarkPriceAt(vtPrices, currentMonthCurrDate);
+        const vooPrev = benchmarkPriceAt(vooPrices, currentMonthPrevDate);
+        const vooCurr = benchmarkPriceAt(vooPrices, currentMonthCurrDate);
 
         const vtMonth = (vtPrev && vtCurr) ? (vtCurr / vtPrev - 1) : null;
         const vooMonth = (vooPrev && vooCurr) ? (vooCurr / vooPrev - 1) : null;
@@ -1112,7 +1174,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         ytdProfit: ytdProfit,
         projected: projected,
         projectedProfit: projectedProfit,
-        monthsPassed: returnPeriods,
+        monthsPassed: monthsElapsed,
         yields: yields,
         currentEndBalance: currentEndBalance,
         accumulatedNetFlow: accumulatedNetFlow,
@@ -1379,17 +1441,18 @@ function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth 
     });
 
     // ZERO KILOMETER LOGIC (First Month)
-    // The whole opening balance is the deposit — same basis calculateYearStats
-    // uses for the baseline month, so the tile and the YTD P&L agree.
+    // No prior snapshot to measure against, so the return is forced to 0 — but the
+    // flow tiles keep the window's real transfers, which the Transfers tab lists.
     if (isFirstMonth) {
+        const baselineNetFlow = totalDeposits - totalWithdraws;
         return {
-            startBalance: 0,
+            startBalance: endBalance - baselineNetFlow,
             endBalance,
-            totalDeposits: endBalance,
-            totalWithdraws: 0,
-            depositDetails: [],
-            withdrawDetails: [],
-            netFlow: endBalance,
+            totalDeposits,
+            totalWithdraws,
+            depositDetails,
+            withdrawDetails,
+            netFlow: baselineNetFlow,
             profit: 0, // Forced 0
             yieldPercent: 0 // Forced 0
         };
@@ -1604,6 +1667,22 @@ async function fetchTransfersForMonth(monthId) {
         .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// Snapshot date when meta.date is missing: the month's real last day. `${id}-31`
+// would produce an invalid date that rolls over into the next month and misses
+// every date-keyed lookup.
+function defaultSnapshotDate(monthId) {
+    const [year, month] = monthId.split('-').map(Number);
+    const lastDay = new Date(year, month, 0).getDate();
+    return `${monthId}-${String(lastDay).padStart(2, '0')}`;
+}
+
+// Whole calendar months between two month ids (2026-01 -> 2026-04 = 3).
+function monthsBetween(fromMonthId, toMonthId) {
+    const [fromYear, fromMonth] = fromMonthId.split('-').map(Number);
+    const [toYear, toMonth] = toMonthId.split('-').map(Number);
+    return (toYear - fromYear) * 12 + (toMonth - fromMonth);
+}
+
 // Inclusive list of month ids from `fromMonthId` to `toMonthId`. The snapshot for a
 // middle month may be missing while its transfer files still belong to the window.
 function monthIdsFromTo(fromMonthId, toMonthId) {
@@ -1670,8 +1749,8 @@ async function loadMonth(monthId) {
         // --- DATE-BASED TRANSFER FILTERING ---
         // Transfers belong to the period between two snapshots based on their meta.date.
         // Filter the window's transfer groups by the two snapshot dates.
-        const prevSnapshotDate = prevData ? (prevData.meta?.date || `${prevMonthId}-31`) : null;
-        const currentSnapshotDate = currentData.meta?.date || `${monthId}-31`;
+        const prevSnapshotDate = prevData ? (prevData.meta?.date || defaultSnapshotDate(prevMonthId)) : null;
+        const currentSnapshotDate = currentData.meta?.date || defaultSnapshotDate(monthId);
 
         const periodGroups = allTransferGroups.filter(g => {
             if (!prevSnapshotDate) return g.date <= currentSnapshotDate;
@@ -1858,6 +1937,9 @@ function renderPortfolio(data, comparison = null) {
     // Helper to format delta badge
     function formatDeltaBadge(deltaInfo) {
         if (!deltaInfo) return '';
+        // Money that arrived with no prior position: calculateDelta reports 0% and the
+        // whole position as the delta, which a badge would read as a gain.
+        if (deltaInfo.percent === 0 && deltaInfo.adjustedStart === 0) return '';
         const hasPercent = deltaInfo.percent !== null && deltaInfo.percent !== 0;
         const deltaVal = deltaInfo.delta;
         const hasMoney = Math.abs(deltaVal) > 0.005;

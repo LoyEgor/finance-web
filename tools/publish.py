@@ -110,41 +110,54 @@ def _transfers_date(path, name):
     return m.group(1)[:7] if m else None
 
 
-def allowed_data_files(month):
+def _selects_transfers(name, path, month):
+    """Does the transfers file `name` belong to `month`'s publish set?
+
+    By filename month, OR by its flow date falling in the reconciliation period
+    (prev_snapshot_date, curr_snapshot_date] — a transfers file is named for the
+    FLOW's date, and that period routinely starts in the previous calendar month.
+    Selecting by filename alone leaves those flows unpublished in either month and
+    the app reports them as market return. The SAME rule decides what to copy and
+    what to delete, or a re-dated file is published under its new name and left
+    behind under the old one.
+    """
+    # Precise match: exactly transfers-{month}.json or transfers-{month}-DD.json.
+    # A loose startswith over-matched siblings like transfers-2026-061.json.
+    if re.match(rf"^transfers-{re.escape(month)}(-\d{{2}})?\.json$", name):
+        return True
+    if not TRANSFERS_RE.match(name):
+        return False
+    curr_date = _snapshot_date(month)
+    if not curr_date:
+        return False
+    priors = [m for m in _snapshot_months() if m < month]
+    prev_date = _snapshot_date(priors[-1]) if priors else None
+    d = _transfers_date(path, name)
+    return bool(d and d <= curr_date and (prev_date is None or d > prev_date))
+
+
+def allowed_data_files(month, deletes=None):
     """Repo-relative data/ paths allowed to publish for `month` (YYYY-MM).
 
-    The target month's snapshot, its transfers, plus benchmarks.json and
-    categories.json which legitimately change per snapshot. Transfers are resolved
-    against what actually exists in finances-web/data/ — by filename month AND by
-    date interval: a transfers file is named for the FLOW's date, but the period is
-    (prev_snapshot_date, curr_snapshot_date], which routinely starts in the previous
-    calendar month. Selecting by filename alone leaves those flows unpublished in
-    either month and the app reports them as market return.
+    The target month's snapshot, its transfers (see _selects_transfers), plus
+    benchmarks.json and categories.json which legitimately change per snapshot.
 
-    The delete set (see plan_deletes) is allowlisted too, so staging a removal does
-    not read as a stray change.
+    `deletes` is the delete plan (see plan_deletes), allowlisted so staging a removal
+    does not read as a stray change. It MUST be the plan computed before any file was
+    removed: re-deriving it here after do_deletes ran returns an empty list, and the
+    ` D data/...` lines git then reports would abort the run as strays.
     """
     files = [
         f"data/{month}.json",
         "data/benchmarks.json",
         "data/categories.json",
     ]
-    # Precise match: exactly transfers-{month}.json or transfers-{month}-DD.json.
-    # A loose startswith over-matched siblings like transfers-2026-061.json.
     data_dir = os.path.join(PUBLIC_REPO, "data")
-    tre = re.compile(rf"^transfers-{re.escape(month)}(-\d{{2}})?\.json$")
-    curr_date = _snapshot_date(month)
-    priors = [m for m in _snapshot_months() if m < month]
-    prev_date = _snapshot_date(priors[-1]) if priors else None
     if os.path.isdir(data_dir):
         for name in sorted(os.listdir(data_dir)):
-            if tre.match(name):
+            if _selects_transfers(name, os.path.join(data_dir, name), month):
                 files.append(f"data/{name}")
-            elif curr_date and TRANSFERS_RE.match(name):
-                d = _transfers_date(os.path.join(data_dir, name), name)
-                if d and d <= curr_date and (prev_date is None or d > prev_date):
-                    files.append(f"data/{name}")
-    files += plan_deletes(month)
+    files += plan_deletes(month) if deletes is None else list(deletes)
     # Deduplicate while preserving order.
     seen = set()
     out = []
@@ -156,20 +169,34 @@ def allowed_data_files(month):
 
 
 # ── sync ─────────────────────────────────────────────────────────────────────
+def private_tracked_data():
+    """data/ paths git TRACKS in the private repo."""
+    out = git(PRIVATE_REPO, "ls-files", "--", "data/", check=False).stdout
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
+
+
 def plan_deletes(month):
-    """Target-month transfers files present in the PRIVATE repo but gone from the
-    source. plan_sync only enumerates the source, so a file that was re-dated,
-    consolidated or corrected away stays behind — and the app prefix-matches every
-    transfers-{month}*, so the stale copy is summed a SECOND time. Scoped to the
-    target month's own filename pattern: never another month's files.
+    """Transfers files this month's publish selects that are present in the PRIVATE
+    repo but gone from the source. plan_sync only enumerates the source, so a file
+    that was re-dated, consolidated or corrected away stays behind — and the app
+    prefix-matches every transfers-{month}*, so the stale copy is summed a SECOND
+    time. Scoped by _selects_transfers, the same rule the copy set uses: never
+    another month's files, and never blind to a file the interval owns but the
+    filename does not name.
+
+    Candidates come from the private working tree AND from git's index, so the plan
+    survives being consulted after the files were already removed from disk.
     """
     src_dir = os.path.join(PUBLIC_REPO, "data")
     dst_dir = os.path.join(PRIVATE_REPO, "data")
     if not os.path.isdir(dst_dir):
         return []
-    tre = re.compile(rf"^transfers-{re.escape(month)}(-\d{{2}})?\.json$")
-    return [f"data/{n}" for n in sorted(os.listdir(dst_dir))
-            if tre.match(n) and not os.path.exists(os.path.join(src_dir, n))]
+    names = {n for n in os.listdir(dst_dir)}
+    names |= {rel.split("/", 1)[1] for rel in private_tracked_data()
+              if rel.startswith("data/") and "/" not in rel.split("/", 1)[1]}
+    return [f"data/{n}" for n in sorted(names)
+            if _selects_transfers(n, os.path.join(dst_dir, n), month)
+            and not os.path.exists(os.path.join(src_dir, n))]
 
 
 def do_deletes(deletes):
@@ -183,7 +210,7 @@ def do_deletes(deletes):
     return gone
 
 
-def plan_sync(month):
+def plan_sync(month, deletes=None):
     """Return [(rel_path, src_abs, dst_abs, status)] for the allowed files.
 
     status: "new" (absent in private), "changed" (differs), "same" (identical),
@@ -192,8 +219,8 @@ def plan_sync(month):
     snapshot is reported so the user notices).
     """
     plan = []
-    deletes = set(plan_deletes(month))
-    for rel in allowed_data_files(month):
+    deletes = set(plan_deletes(month) if deletes is None else deletes)
+    for rel in allowed_data_files(month, deletes):
         if rel in deletes:
             continue  # reported separately by plan_deletes; absent from the source by definition
         src = os.path.join(PUBLIC_REPO, rel)
@@ -345,13 +372,15 @@ def parse_porcelain_paths(porcelain):
     return paths
 
 
-def guard(month):
+def guard(month, deletes=None):
     """Inspect the private repo's data/ working tree; return (ok, changed, stray).
 
     changed = all paths git reports dirty under data/.
     stray   = those NOT in the allowlist for `month`. Non-empty stray => abort.
+
+    `deletes` must be the plan captured BEFORE any removal — see allowed_data_files.
     """
-    allow = set(allowed_data_files(month))
+    allow = set(allowed_data_files(month, deletes))
     # -uall expands untracked directories to individual files so a whole new dir
     # never collapses to one `data/` entry that hides the actual offending paths.
     porcelain = git_out(PRIVATE_REPO, "status", "--porcelain", "-uall", "--", "data/")
@@ -372,26 +401,44 @@ def _git_failure(label, e):
 
 
 def private_commit_push(month, paths, do_it):
-    """Stage ONLY `paths`, commit ONLY them, push origin. Returns (ok, summary)."""
-    if not paths:
-        return True, "PRIVATE: nothing to commit (working tree clean for allowed files)."
+    """Stage ONLY `paths`, commit ONLY them, push every unpushed commit. (ok, summary).
+
+    "Nothing to commit" is NOT "nothing to push": when an earlier run committed and
+    then failed to push, the files are committed, `paths` comes back empty, and a
+    retry that returned early would report success while the month sits unpushed. So
+    the push is decided by the gap to the upstream, never by what this run staged.
+    """
     msg = COMMIT_MSG_PRIVATE.format(month=month)
     if not do_it:
+        if not paths:
+            return True, "PRIVATE: nothing to commit (working tree clean for allowed files)."
         return True, (
             "PRIVATE would: git add {n} file(s), "
             'commit --only -m "{msg}", push origin\n    + '.format(n=len(paths), msg=msg)
             + "\n    + ".join(paths)
         )
     try:
-        git(PRIVATE_REPO, "add", "--all", "--", *paths)
-        # --only + pathspec: a bare `git commit` also publishes whatever the operator
-        # had already staged in the private repo, which the guard never inspects.
-        git(PRIVATE_REPO, "commit", "--only", "-m", msg, "--", *paths)
-        head = git_out(PRIVATE_REPO, "rev-parse", "--short", "HEAD").strip()
-        git(PRIVATE_REPO, "push", "origin")
+        if paths:
+            git(PRIVATE_REPO, "add", "--all", "--", *paths)
+            # --only + pathspec: a bare `git commit` also publishes whatever the operator
+            # had already staged in the private repo, which the guard never inspects.
+            git(PRIVATE_REPO, "commit", "--only", "-m", msg, "--", *paths)
+            head = git_out(PRIVATE_REPO, "rev-parse", "--short", "HEAD").strip()
+            done = f'PRIVATE: committed {head} "{msg}" ({len(paths)} file(s))'
+        else:
+            done = "PRIVATE: nothing to commit (working tree clean for allowed files)"
+        r = git(PRIVATE_REPO, "rev-list", "--count", "@{u}..HEAD", check=False)
+        if r.returncode != 0:
+            return False, (f"{done}, but the upstream (@{{u}}) does not resolve, so the push cannot be "
+                           f"verified — set a tracking branch and push by hand.\n    "
+                           + ((r.stderr or "").strip() or "(no stderr)"))
+        ahead = int(r.stdout.strip() or 0)
+        if ahead:
+            git(PRIVATE_REPO, "push", "origin")
     except subprocess.CalledProcessError as e:
         return False, _git_failure("PRIVATE", e)
-    return True, f'PRIVATE: committed {head} "{msg}" ({len(paths)} file(s)) and pushed.'
+    return True, (f"{done}; pushed {ahead} commit(s)." if ahead
+                  else f"{done}; already up to date with origin.")
 
 
 # ── PUBLIC-side code allowlist (defense-in-depth over .gitignore) ──────────────
@@ -539,7 +586,11 @@ def main(argv=None):
         print(f"ERROR: PRIVATE_DATA_REPO is not a git repo: {PRIVATE_REPO}", file=sys.stderr)
         return 2
 
-    plan = plan_sync(month)
+    # ONE delete plan for the whole run, captured before anything is touched: every
+    # later consumer (allowlist, guard, staging) gets this list, never a re-derivation
+    # against a tree the deletions already changed.
+    deletes = plan_deletes(month)
+    plan = plan_sync(month, deletes)
 
     snapshot_entry = next((p for p in plan if p[0] == f"data/{month}.json"), None)
     if snapshot_entry and snapshot_entry[3] == "missing-src":
@@ -557,14 +608,13 @@ def main(argv=None):
         # guard from the plan: any new/changed/same allowed file is in-allowlist
         # by construction, plus we surface any ALREADY-dirty stray paths in the
         # private repo so the user sees a pre-existing problem before --push.
-        deletes = plan_deletes(month)
         if deletes:
             print("Stale private files that would be DELETED (absent from the source; the app "
                   "would otherwise sum them twice):")
             for rel in deletes:
                 print(f"  [     delete] {rel}")
             print("")
-        ok, changed, stray = guard(month)
+        ok, changed, stray = guard(month, deletes)
         print("Guard (current private working tree under data/):")
         if not changed:
             print("  clean — no pre-existing changes in private data/.")
@@ -578,7 +628,7 @@ def main(argv=None):
         print("")
         # What WOULD be committed/pushed. Stage only files this run would copy
         # that are also on the data allowlist (defense-in-depth vs. dirty siblings).
-        allow_data = set(allowed_data_files(month))
+        allow_data = set(allowed_data_files(month, deletes))
         would_copy = [r for r, _s, _d, st in plan
                       if st in ("new", "changed") and r in allow_data] + deletes
         _priv_ok, priv_msg = private_commit_push(month, would_copy, do_it=False)
@@ -603,14 +653,14 @@ def main(argv=None):
         return 0
 
     # ── LIVE path ────────────────────────────────────────────────────────────
+    # Copies only. A copy is idempotent and re-derivable from the source, so it is safe
+    # to make before the prompt; a private-only file, once deleted, is not — the
+    # deletions wait until the operator has actually confirmed them below.
     copied = do_copy(plan)
-    removed = do_deletes(plan_deletes(month))
-    for rel in removed:
-        print(f"Removed stale private file (absent from the source): {rel}")
-    if not copied and not removed:
+    if not copied and not deletes:
         print("No new/changed data files to sync; checking guard and public repo anyway.")
 
-    ok, changed, stray = guard(month)
+    ok, changed, stray = guard(month, deletes)
     print("Guard (private working tree under data/ after sync):")
     for p in changed:
         tag = "STRAY!" if p in stray else "ok"
@@ -642,7 +692,7 @@ def main(argv=None):
     # Stage every DIRTY allowlisted path, not just what this run copied: an aborted
     # earlier run leaves the files copied but uncommitted, and `copied` is then empty
     # while the month is still unpublished.
-    allow_data = set(allowed_data_files(month))
+    allow_data = set(allowed_data_files(month, deletes))
     to_stage = sorted(set(changed) & allow_data)
 
     # Confirm before any git write — print the actual file PATHS, not just counts.
@@ -651,8 +701,10 @@ def main(argv=None):
     if to_stage:
         for p in to_stage:
             print(f"    + {p}")
-    else:
+    elif not deletes:
         print("    (no new/changed data files to stage)")
+    for p in deletes:
+        print(f"    - {p}  (stale in private, gone from the source)")
     print(f'  PUBLIC:  "{COMMIT_MSG_PUBLIC}"')
     if pub_allowed:
         for p in pub_allowed:
@@ -665,10 +717,19 @@ def main(argv=None):
               f"(sync only, not committed there)")
     reply = input("Proceed? [y/N] ").strip().lower()
     if reply != "y":
-        print("Aborted by user. Synced files remain on disk; no git writes performed.")
+        print("Aborted by user. Synced files remain on disk; nothing was deleted and "
+              "no git writes were performed.")
         return 1
 
     print("")
+    # Only TRACKED removals can be staged: `git add` on a path that is neither on disk
+    # nor in the index fails the whole commit.
+    tracked = private_tracked_data()
+    removed = do_deletes(deletes)
+    for rel in removed:
+        print(f"Removed stale private file (absent from the source): {rel}")
+    to_stage = sorted(set(to_stage) | (set(removed) & tracked))
+
     priv_ok, priv_msg = private_commit_push(month, to_stage, do_it=True)
     print(priv_msg)
     pub_ok, pub_msg = public_commit_push(do_it=True) if priv_ok else (

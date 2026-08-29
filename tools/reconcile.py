@@ -216,7 +216,7 @@ def analyze(prev, curr, transfers, verbose, baseline=False):
         # A recorded flow only EXPLAINS the exit/appearance when it accounts for the
         # whole position; a dust row on the same key must not silence the flag.
         elif p and not c and pv > STABLE_TOL and abs(pv + a) > explained_tol(pv):
-            anomalies.append(f"[GHOST?] {meta['cat']}/{meta['source']}/{meta['name']} exited ({pv:,.0f}→0), recorded flow {a:+,.2f} leaves {pv + a:+,.2f} unexplained")
+            anomalies.append(f"[GHOST?] {meta['cat']}/{meta['source']}/{meta['name']} exited ({pv:,.0f}→0), recorded flow {a:+,.2f} leaves {cv - pv - a:+,.2f} unexplained")
         elif c and not p and cv > STABLE_TOL and abs(cv - a) > explained_tol(cv) and not baseline:
             anomalies.append(f"[NEW?]   {meta['cat']}/{meta['source']}/{meta['name']} appeared ({cv:,.0f}), recorded flow {a:+,.2f} leaves {cv - a:+,.2f} unfunded")
 

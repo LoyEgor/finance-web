@@ -154,7 +154,8 @@ def make_residual_anchor_price_fn(prev, curr, transfers, config):
 
 
 # ── fetched-deposit pool for vanished_venue (from API flows) ─────────────────
-def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None):
+def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None,
+                        binance_venue="Binance", ibkr_venue="IBKR"):
     """Normalize fetched inbound rows from the API venues into the {amount,...}
     pool checks.vanished_venue matches against — all amounts in USD so they compare
     against a vanished venue's ~$ value. Stablecoins (and fiat rows, already in fiat
@@ -179,7 +180,7 @@ def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None):
                 amt = amt * px
             else:
                 unpriced = True
-        pool.append({"amount": amt, "coin": coin, "venue": "Binance",
+        pool.append({"amount": amt, "coin": coin, "venue": binance_venue,
                      "time": d.get("time"), "source": d.get("source"), "unpriced": unpriced})
     fx = (ibkr_flows or {}).get("fx") or {}
     for r in (ibkr_flows or {}).get("deposits", []):
@@ -189,7 +190,7 @@ def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None):
         unpriced = rate is None
         if not unpriced:
             amt = amt * rate
-        pool.append({"amount": amt, "coin": ccy, "venue": "IBKR",
+        pool.append({"amount": amt, "coin": ccy, "venue": ibkr_venue,
                      "time": r.get("date"), "unpriced": unpriced})
     return pool
 
@@ -300,6 +301,7 @@ def run_validate(out_path=None):
         "prev_items": _items_map(prev),
         "cur_items": _items_map(curr),
         "price_fn": price_fn,
+        "price_is_external": False,  # r comes from the venue's own residual, not a price feed
         "deposits": [],  # offline: no fetched deposit pool; vanished_venue reports 0 candidates
         "category_residuals": category_residuals(prev, curr, transfers),
         "stable_deltas": stable_deltas(prev, curr),
@@ -348,6 +350,12 @@ def run_live(out_path=None, as_of=None):
     real_today = datetime.date.today().isoformat()
     today = as_of or real_today
     since = prev["date"]
+    if as_of and as_of <= since:
+        raise SystemExit(
+            f"--as-of {as_of} is not after the previous snapshot {since}: the period ({since}, {as_of}] "
+            f"is empty or inverted, so every flow window comes back empty, the run targets the very "
+            f"file it compares against, and the result reads as a clean month. Re-run once the "
+            f"statement covers a day past {since}.")
 
     extra_findings = []
     fetched_items = []
@@ -372,7 +380,7 @@ def run_live(out_path=None, as_of=None):
             if not token or not qid:
                 raise SystemExit("set IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID in tools/.env")
             data = mod.parse(mod.flex_fetch(token, qid))
-            fetched_items += mod.to_snapshot_items(data)
+            fetched_items += mod.to_snapshot_items(data, venue)
             flex_nav = data.get("nav")
             ibkr_ctx = (venue, mod, data)
             m = data.get("meta") or {}
@@ -425,7 +433,16 @@ def run_live(out_path=None, as_of=None):
             earliest = min(ends)
             e_date = f"{earliest[:4]}-{earliest[4:6]}-{earliest[6:8]}"
             lag = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(e_date)).days
-            if 0 < lag <= 4:
+            if e_date <= since:
+                # Back-dating here would invert the period and silently reconcile a
+                # negative span; the gate below must fail on the real dates instead.
+                extra_findings.append(checks._finding(
+                    "as_of", "critical",
+                    f"earliest source coverage ends {e_date}, on or before the previous snapshot "
+                    f"{since} — the statement covers no part of this period. NOT back-dating; "
+                    f"re-pull once it reaches past {since}.",
+                    {"coverage_end": e_date, "prev_date": since, "source_windows": source_windows}))
+            elif 0 < lag <= 4:
                 print(f"  statement coverage ends {e_date} — dating the snapshot there (auto as-of; was {today}).")
                 today = e_date
 
@@ -453,8 +470,11 @@ def run_live(out_path=None, as_of=None):
         ibkr_flows = {"deposits": [r for r in deps if r["amount"] > 0], "fx": data.get("fx") or {}}
     if binance_ctx:
         venue, mod, key, secret = binance_ctx
-        start = int(datetime.datetime.strptime(since, "%Y-%m-%d")
-                    .replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+        # (since, until] — the period is OPEN on the left: `since` is the previous
+        # snapshot date and its flows are already inside that snapshot's balances.
+        start = int((datetime.datetime.strptime(since, "%Y-%m-%d")
+                     .replace(tzinfo=datetime.timezone.utc)
+                     + datetime.timedelta(days=1)).timestamp() * 1000)
         end = int(datetime.datetime.strptime(today, "%Y-%m-%d")
                   .replace(tzinfo=datetime.timezone.utc).timestamp() * 1000) + 86_400_000 - 1
         binance_flows = mod.flows(key, secret, start, end)
@@ -475,9 +495,9 @@ def run_live(out_path=None, as_of=None):
     cov = checks.coverage_gate(manifests, period, config)
     if any(f["severity"] == "critical" for f in cov):
         print("  live fetch complete, but coverage gate FAILED — do not assemble on incomplete flows:")
-        for f in cov:
+        for f in cov + extra_findings:
             print(f"    [{SEV_TAG[f['severity']]}] {f['check']:16} {f['message']}")
-        return cov
+        return cov + extra_findings
 
     # Assemble the candidate snapshot: fetched API rows + the non-API (screenshot /
     # manual) venues. A pure-code run cannot OCR screenshots or read physical cash;
@@ -515,7 +535,9 @@ def run_live(out_path=None, as_of=None):
             "recorded book; do NOT write this snapshot.",
             {"mismatches": slines}))
 
-    deposits = deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd)
+    deposits = deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd,
+                                   binance_venue=binance_ctx[0] if binance_ctx else "Binance",
+                                   ibkr_venue=ibkr_ctx[0] if ibkr_ctx else "IBKR")
     price_fn = make_klines_price_fn(prev["date"], curr["date"])
 
     ctx = {

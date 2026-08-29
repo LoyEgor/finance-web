@@ -16,6 +16,7 @@ Run:  python3 tools/fetch_binance.py            # human summary
       python3 tools/fetch_binance.py --out tools/out/binance.json
 """
 import argparse
+import datetime
 import hashlib
 import hmac
 import json
@@ -43,6 +44,9 @@ P2P_WINDOW_MS = 30 * DAY_MS
 DEPOSIT_OK = {1, 6}         # capital deposit status int: 1 = success, 6 = credited-but-cannot-withdraw
                             # (6 is already IN the balance, so excluding it makes the funds look like market gain)
 WITHDRAW_OK = {6}           # capital withdraw status int: 6 = completed (0..5 = in-flight/cancelled/failed)
+# The withdraw endpoint windows on applyTime, so a row that settled inside the period
+# but was applied before it is only reachable by reaching this far back.
+WITHDRAW_SETTLE_LOOKBACK_MS = 14 * DAY_MS
 FIAT_OK = {"Successful", "Finished"}  # fiat order status strings considered final/credited
 
 
@@ -116,6 +120,25 @@ def paginate(path, key, secret, base=None):
         if len(chunk) < 100:
             return rows
         cur += 1
+
+
+def to_ms(v):
+    """Epoch ms from a Binance time field — already-ms int, or the UTC
+    "YYYY-MM-DD HH:MM:SS" string the capital endpoints return. None if unparsable."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v).strip()
+    if s.isdigit():
+        return int(s)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return int(datetime.datetime.strptime(s, fmt)
+                       .replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+        except ValueError:
+            pass
+    return None
 
 
 def windows(start_ms, end_ms, span_ms):
@@ -255,9 +278,13 @@ def flows(key, secret, start_ms, end_ms):
     ok("capital-deposit", n)
 
     # --- capital (on-chain) withdrawals: status==6 (completed); chunk <=90d, paginate offset ---
+    # Booked in the period it COMPLETED, not the one it was applied in: while in flight
+    # the coins are still in the balance (collect() counts `withdrawing`), so booking the
+    # flow early leaves the later balance drop looking like a market loss.
     mark("capital-withdraw", [start_ms, end_ms])
     n = 0
-    for w_from, w_to in windows(start_ms, end_ms, CAPITAL_WINDOW_MS):
+    warned_applytime = False
+    for w_from, w_to in windows(start_ms - WITHDRAW_SETTLE_LOOKBACK_MS, end_ms, CAPITAL_WINDOW_MS):
         offset = 0
         while True:
             try:
@@ -269,14 +296,28 @@ def flows(key, secret, start_ms, end_ms):
             if not page:
                 break
             for w in page:
+                done = w.get("completeTime")
+                if done is None and not warned_applytime:
+                    warned_applytime = True
+                    print("  (capital-withdraw: the API returned no completeTime — falling back to "
+                          "applyTime, so a withdraw that settled in a later period is booked here)")
+                done = done if done is not None else w.get("applyTime")
                 row = {"coin": w["coin"], "amount": float(w["amount"]), "source": "capital",
-                       "fee": float(w.get("transactionFee", 0)), "time": w.get("applyTime"),
+                       "fee": float(w.get("transactionFee", 0)), "time": done,
+                       "applyTime": w.get("applyTime"), "completeTime": w.get("completeTime"),
                        "address": w.get("address"), "network": w.get("network"), "status": w.get("status")}
-                if w.get("status") in WITHDRAW_OK:
-                    out["withdrawals"].append(row)
-                    n += 1
-                else:
+                if w.get("status") not in WITHDRAW_OK:
                     out["dropped"].append({**row, "channel": "capital-withdraw", "reason": "non-final-status"})
+                    continue
+                t = to_ms(done)
+                # An unparsable timestamp is KEPT: dropping a completed withdrawal would
+                # turn a real outflow into a fabricated market loss.
+                if t is not None and not (start_ms <= t <= end_ms):
+                    out["dropped"].append({**row, "channel": "capital-withdraw",
+                                           "reason": "completed-outside-period"})
+                    continue
+                out["withdrawals"].append(row)
+                n += 1
             if len(page) < 1000:
                 break
             offset += 1000
@@ -394,7 +435,6 @@ def flows(key, secret, start_ms, end_ms):
 
 
 def main():
-    import datetime
     ap = argparse.ArgumentParser(description="Read-only Binance balances → USD (spot+funding+earn).")
     ap.add_argument("--raw", action="store_true")
     ap.add_argument("--out")

@@ -97,7 +97,7 @@ def coverage_gate(manifests, period, config):
                     {"venue": venue, "channel": ch, "manifest": m}))
                 continue
             span = _window_span(m.get("window"))
-            if not span or span == (None, None):
+            if not span or not span[0] or not span[1]:
                 # A required FLOW channel always carries a period window. Missing or
                 # unparsable means we cannot tell what it covered — asserting coverage
                 # from `rows` alone is exactly the fabrication this gate exists to catch.
@@ -110,7 +110,10 @@ def coverage_gate(manifests, period, config):
                 continue
             if prev and curr:
                 w_from, w_to = span
-                if (w_from and w_from > prev) or (w_to and w_to < curr):
+                # The period is open on the left, so a window opening the DAY AFTER prev
+                # still covers all of it — that is exactly the window the fetchers build.
+                first = _next_ymd(prev)
+                if (w_from and w_from > first) or (w_to and w_to < curr):
                     out.append(_finding(
                         "coverage_gate", "critical",
                         f"{venue}/{ch}: window {span} does not span the period "
@@ -156,6 +159,16 @@ def _window_span(window):
         a, b = window
         return (_ms_to_ymd(a), _ms_to_ymd(b))
     return None
+
+
+def _next_ymd(ymd):
+    """The YYYYMMDD of the day after `ymd` (unchanged if it isn't a real date)."""
+    import datetime
+    try:
+        d = datetime.date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:8]))
+    except (TypeError, ValueError):
+        return ymd
+    return (d + datetime.timedelta(days=1)).strftime("%Y%m%d")
 
 
 def _ms_to_ymd(v):
@@ -294,7 +307,7 @@ def recurring_guard(transfers, config):
 
 
 # ── price_anchor ─────────────────────────────────────────────────────────────
-def price_anchor(prev_items, cur_items, transfers, price_fn, config):
+def price_anchor(prev_items, cur_items, transfers, price_fn, config, price_is_external=True):
     """Cross-venue fungible-asset anchor. For an asset code held on >1 venue, the
     same % market move applies everywhere. We derive the real period return r from
     price_fn (injected: Binance klines / Yahoo) and check each venue's residual:
@@ -306,6 +319,11 @@ def price_anchor(prev_items, cur_items, transfers, price_fn, config):
     fabricated residual. An excess beyond config.TOL['price_anchor_pp'] (% of prev) implies a hidden
     flow (a deposit/top-up or an OCR misread) -> flag. FLAG-ONLY: never auto-edit a
     screenshot value (a misread and a real top-up are indistinguishable from value).
+
+    price_is_external=False means r came from a venue's OWN residual (the --validate
+    price_fn), i.e. r was already derived with the flow charged zero return. Crediting
+    the flow half the period return on top then double-counts it and flags the very
+    position r was derived from; the flow enters at face value instead.
 
     prev_items / cur_items: {asset_key: {"cat","source","name","val"}} (reconcile shape)
     price_fn(asset_code, prev_date, curr_date) -> float period return r, or None.
@@ -351,7 +369,7 @@ def price_anchor(prev_items, cur_items, transfers, price_fn, config):
             flow = adj.get(k, 0.0)
             if max(abs(pv), abs(cv)) < dust:
                 continue
-            excess = cv - pv * (1 + r) - flow * (1 + r / 2)
+            excess = cv - pv * (1 + r) - flow * ((1 + r / 2) if price_is_external else 1.0)
             base = abs(pv) if abs(pv) > dust else abs(cv)
             excess_pp = (excess / base * 100) if base else 0.0
             if abs(excess) >= match_floor and abs(excess_pp) > pp:
@@ -388,9 +406,10 @@ def vanished_venue(prev_items, cur_items, transfers, deposits, config):
     flag with candidate destinations. Run AFTER simplify so multi-hop/round-trips
     collapse to net flows before matching.
 
-    A SUBSTANTIAL recorded exit means the drop is already booked — any leftover is a
-    market move on a sold-out position (stocks/crypto) or belongs to the stable
-    invariant / usd band, NOT a vanished flow. The copy category is EXCLUDED: a
+    A recorded exit that explains the WHOLE position (reconcile.explained_tol) means
+    the drop is already booked — the leftover is then a market move on a sold-out
+    position or belongs to the stable invariant / usd band, NOT a vanished flow. A
+    PARTIAL exit still leaves its remainder unexplained. The copy category is EXCLUDED: a
     copytrading sleeve dropping to ~0 can be a genuine loss (no API), handled
     separately — never required to reappear as a deposit.
 
@@ -410,9 +429,10 @@ def vanished_venue(prev_items, cur_items, transfers, deposits, config):
         if pv <= dust or cv > dust:
             continue
         flow = adj.get(k, 0.0)
-        # Only a SUBSTANTIAL OUTBOUND flow books the exit. A deposit — or a dust row —
-        # on the same key explains nothing about where the value went.
-        if flow < 0 and abs(flow) >= max(slack, 0.05 * pv):
+        # The exit is booked only when the recorded flow accounts for the WHOLE
+        # position: what a partial withdraw leaves behind is still unexplained. Same
+        # form (and tolerance) as reconcile's GHOST? test, not a second rule.
+        if abs(pv + flow) <= reconcile.explained_tol(pv):
             continue
         candidates = [d for d in (deposits or [])
                       if abs(float(d.get("amount", 0.0)) - pv) <= max(slack, 0.05 * pv)]
@@ -547,7 +567,8 @@ def run_all(ctx, config):
     if "raw_transfers" in ctx or "transfers" in ctx:
         findings += recurring_guard(ctx.get("raw_transfers") or ctx.get("transfers"), config)
     if {"prev_items", "cur_items", "transfers", "price_fn"} <= ctx.keys():
-        findings += price_anchor(ctx["prev_items"], ctx["cur_items"], ctx["transfers"], ctx["price_fn"], config)
+        findings += price_anchor(ctx["prev_items"], ctx["cur_items"], ctx["transfers"], ctx["price_fn"],
+                                 config, ctx.get("price_is_external", True))
     if {"prev_items", "cur_items", "transfers"} <= ctx.keys():
         findings += vanished_venue(ctx["prev_items"], ctx["cur_items"], ctx["transfers"],
                                    ctx.get("deposits", []), config)
@@ -567,7 +588,8 @@ def _self_test():
       - salary: on-target must NOT flag, far-from-expected MUST flag;
       - usd_band scales with the cash held, and sizes on the LARGER of the two totals;
       - _is_stable_asset matches the asset CODE, not a substring of the display name;
-      - vanished_venue is silenced only by a substantial OUTBOUND flow.
+      - vanished_venue is silenced only by an exit explaining the WHOLE position;
+      - coverage_gate fires on a half-parsed window, not only on a wholly missing one.
     """
     import types
 
@@ -606,13 +628,34 @@ def _self_test():
     def _row(typ, amount):
         return {"type": typ, "category": "crypto", "source": "X", "name": "FOO", "amount": amount}
 
-    assert _vanished([]), "vanished with nothing recorded -> MUST flag"
-    assert _vanished([_row("deposit", 5.0)]), "an inbound dust row must not explain a vanished venue"
-    assert not _vanished([_row("withdraw", 3800.0)]), "a full recorded exit -> no flag"
+    # A required flow channel must prove BOTH bounds: a half-parsed window
+    # ("..20260630") cannot show the channel starts on/before the previous snapshot.
+    def _cov(window):
+        man = {"Broker": {"cashtx": {"queried": True, "window": window, "rows": 0}}}
+        cfg.VENUES["Broker"]["required_channels"] = ["cashtx"]
+        try:
+            return coverage_gate(man, {"prev_date": "2026-05-31", "curr_date": "2026-06-30"}, cfg)
+        finally:
+            cfg.VENUES["Broker"]["required_channels"] = []
 
-    # usd_band's formula lives in reconcile and reads reconcile's own config module.
+    def _crit(fs):
+        return any(f["severity"] == "critical" for f in fs)
+
+    assert _crit(_cov("..20260630")), "a window with no start bound -> MUST fail the gate"
+    assert _crit(_cov("20260101..")), "a window with no end bound -> MUST fail the gate"
+    assert _crit(_cov([1748649600000, None])), "an epoch pair with no end -> MUST fail the gate"
+    assert not _crit(_cov("20260531..20260630")), "a spanning window -> gate passes"
+    assert not _crit(_cov("20260601..20260630")), "opening the day after prev still spans (prev, curr]"
+
+    # explained_tol and usd_band's formula live in reconcile and read reconcile's
+    # own config module, so the fixture config has to stand in for it here.
     real_cfg, reconcile.config = reconcile.config, cfg
     try:
+        assert _vanished([]), "vanished with nothing recorded -> MUST flag"
+        assert _vanished([_row("deposit", 5.0)]), "an inbound dust row must not explain a vanished venue"
+        assert _vanished([_row("withdraw", 200.0)]), "a partial exit leaves the rest unexplained -> MUST flag"
+        assert not _vanished([_row("withdraw", 3800.0)]), "a full recorded exit -> no flag"
+
         near_empty = usd_band({reconcile.STABLE_CAT: 100.0}, cfg, usd_total=0.0)
         big_cash = usd_band({reconcile.STABLE_CAT: 100.0}, cfg, usd_total=50_000.0)
         drained = usd_band({reconcile.STABLE_CAT: 100.0}, cfg, usd_total=0.0, prev_usd_total=50_000.0)
