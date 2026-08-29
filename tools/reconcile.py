@@ -43,10 +43,22 @@ STABLE_TOL = config.TOL["stable_resid_usd"]  # $; FX cash (EUR/GBP/EURI) can dri
 # advisory-flagged. FLAG-ONLY: the engine never auto-adjusts transfers to close it.
 # Sourced from config.TOL via the SAME formula as the checks-layer usd_band so the
 # CLI band and the check never diverge — config is the single place for the threshold.
-def usd_resid_band(usd_total):
-    """Per-period usd-category residual band given that period's usd total."""
+def usd_resid_band(prev_usd_total, curr_usd_total):
+    """Per-period usd-category residual band. Sized on the LARGER of the period's
+    two usd totals: the drift accrues on the cash held DURING the period, so a
+    category drawn down to near zero by the end still earned a month of FX/interest
+    on what it held before."""
     return max(STABLE_TOL, config.TOL["usd_band_floor_usd"],
-               config.TOL["usd_band_pct"] * abs(usd_total))
+               config.TOL["usd_band_pct"] * max(abs(prev_usd_total), abs(curr_usd_total)))
+
+
+def explained_tol(value):
+    """How much of a vanished/appeared position a recorded flow may leave unexplained
+    before it stops counting as an explanation. A stable asset carries no market move,
+    so the floor is dust; a market asset's snapshot value differs from the traded
+    amount by a real price move, and charging that to "unexplained" would flag every
+    ordinary sell-out."""
+    return max(config.TOL["dust_usd"], config.TOL["price_anchor_pp"] / 100.0 * abs(value))
 
 
 def asset_key(cat, source, name):
@@ -61,7 +73,9 @@ def load_snapshots():
         with open(path) as fh:
             d = json.load(fh)
         month = os.path.splitext(os.path.basename(path))[0]
-        date = (d.get("meta") or {}).get("date") or month
+        # Fallback is the month's UPPER bound: a bare "2026-05" sorts BELOW every
+        # "2026-05-DD", so every transfer of that month would shift a period later.
+        date = (d.get("meta") or {}).get("date") or f"{month}-31"
         items = {}
         by_cat = defaultdict(float)
         for cat in d.get("portfolio", []):
@@ -179,7 +193,11 @@ def fmt(v):
     return f"{v:>12,.2f}"
 
 
-def analyze(prev, curr, transfers, verbose):
+def analyze(prev, curr, transfers, verbose, baseline=False):
+    """baseline=True marks the synthetic opening period (no predecessor snapshot).
+    Every position is new and the whole opening balance looks like an unrecorded
+    inflow there, so the appear/propose/band checks are skipped rather than emitting
+    noise the operator learns to scroll past."""
     adj, _ = adjustments(transfers)
     keys = set(prev["items"]) | set(curr["items"]) | set(adj)
     cats = sorted(set(prev["by_cat"]) | set(curr["by_cat"]))
@@ -195,15 +213,17 @@ def analyze(prev, curr, transfers, verbose):
 
         if not p and not c and abs(a) > 0.005:
             anomalies.append(f"[ORPHAN] {meta['cat']}/{meta['source']}/{meta['name']} — transfer references an asset absent in both snapshots (net {a:+.2f})")
-        elif p and not c and abs(a) < 0.005 and pv > STABLE_TOL:
-            anomalies.append(f"[GHOST?] {meta['cat']}/{meta['source']}/{meta['name']} exited ({pv:,.0f}→0) with no recorded sell/withdraw")
-        elif c and not p and abs(a) < 0.005 and cv > STABLE_TOL:
-            anomalies.append(f"[NEW?]   {meta['cat']}/{meta['source']}/{meta['name']} appeared ({cv:,.0f}) with no recorded funding")
+        # A recorded flow only EXPLAINS the exit/appearance when it accounts for the
+        # whole position; a dust row on the same key must not silence the flag.
+        elif p and not c and pv > STABLE_TOL and abs(pv + a) > explained_tol(pv):
+            anomalies.append(f"[GHOST?] {meta['cat']}/{meta['source']}/{meta['name']} exited ({pv:,.0f}→0), recorded flow {a:+,.2f} leaves {pv + a:+,.2f} unexplained")
+        elif c and not p and cv > STABLE_TOL and abs(cv - a) > explained_tol(cv) and not baseline:
+            anomalies.append(f"[NEW?]   {meta['cat']}/{meta['source']}/{meta['name']} appeared ({cv:,.0f}), recorded flow {a:+,.2f} leaves {cv - a:+,.2f} unfunded")
 
         # RECONSTRUCT: re-derive flow from the snapshot delta alone, then compare
         # to what's already recorded. The residual (cv - pv - a) is the part the
         # recorded flows DON'T explain. Only stable/cash assets are confident here.
-        if meta["cat"] == STABLE_CAT:
+        if meta["cat"] == STABLE_CAT and not baseline:
             residual = cv - pv - a
             if abs(residual) > STABLE_TOL:
                 if abs(a) < 0.005:
@@ -221,7 +241,8 @@ def analyze(prev, curr, transfers, verbose):
     ext_dep = sum(float(t["amount"]) for t in transfers if t["type"] == "deposit")
     ext_wd = sum(float(t["amount"]) for t in transfers if t["type"] == "withdraw")
 
-    print(f"\n{'='*78}\n{prev['date']} → {curr['date']}   ({curr['month']})")
+    print(f"\n{'='*78}\n{prev['date']} → {curr['date']}   ({curr['month']})"
+          f"{'   [BASELINE — opening positions, nothing to reconcile against]' if baseline else ''}")
     print(f"  portfolio total: {prev['total']:,.0f} → {curr['total']:,.0f}   ({curr['total']-prev['total']:+,.0f})")
     types = defaultdict(int)
     for t in transfers:
@@ -257,15 +278,18 @@ def analyze(prev, curr, transfers, verbose):
     # ANTI-FUDGE band check (FLAG-ONLY): a usd residual past the band means the
     # recorded flows leave more unexplained than FX/interest can account for.
     # Advisory only — never auto-fix, never touch transfers.
-    band = usd_resid_band(curr["by_cat"].get(STABLE_CAT, 0.0))
-    if abs(usd_resid) > band:
-        stable_deltas = [(m, cv - pv) for (m, pv, cv, a, res) in rows if m["cat"] == STABLE_CAT]
-        big = max(stable_deltas, key=lambda x: abs(x[1]), default=None)
-        culprit = f"  largest stable delta: {big[0]['cat']}/{big[0]['source']}/{big[0]['name']} ({big[1]:+,.2f})" if big else ""
+    band = usd_resid_band(prev["by_cat"].get(STABLE_CAT, 0.0), curr["by_cat"].get(STABLE_CAT, 0.0))
+    if not baseline and abs(usd_resid) > band:
+        # Rank by the UNEXPLAINED part: the largest raw delta is usually a move the
+        # transfers already cover, which points the operator at the wrong row.
+        stable_resids = [(m, res) for (m, pv, cv, a, res) in rows if m["cat"] == STABLE_CAT]
+        big = max(stable_resids, key=lambda x: abs(x[1]), default=None)
+        culprit = f"  largest unexplained stable residual: {big[0]['cat']}/{big[0]['source']}/{big[0]['name']} ({big[1]:+,.2f})" if big else ""
         print(f"  !! FLAG: usd residual {usd_resid:+,.2f} exceeds band ±{band:,.0f} "
               f"(advisory; transfers untouched){culprit}")
 
-    return {"month": curr["month"], "transfers": transfers, "usd_resid": usd_resid, "has_transfers": bool(transfers)}
+    return {"month": curr["month"], "transfers": transfers, "usd_resid": usd_resid,
+            "has_transfers": bool(transfers), "baseline": baseline}
 
 
 def main():
@@ -291,7 +315,7 @@ def main():
     }
     if not args.period or snaps[0]["month"] == args.period:
         opening_trs = transfers_for_period(groups, None, snaps[0]["date"])
-        results.append(analyze(opening_prev, snaps[0], opening_trs, args.verbose))
+        results.append(analyze(opening_prev, snaps[0], opening_trs, args.verbose, baseline=True))
 
     for prev, curr in zip(snaps, snaps[1:]):
         if args.period and curr["month"] != args.period:
@@ -314,7 +338,10 @@ def main():
     print(f"  recorded transfers analysed: {n_tr}")
     print("  usd-category reconciliation (recorded flows vs actual delta; small = FX/interest):")
     for r in results:
-        note = "" if r["has_transfers"] else "  ← no transfers recorded for this period"
+        if r["baseline"]:
+            note = "  ← baseline (opening balance, not a residual)"
+        else:
+            note = "" if r["has_transfers"] else "  ← no transfers recorded for this period"
         print(f"    {r['month']:10} residual {r['usd_resid']:>+9,.0f}{note}")
     if n_tr:
         print("  recorded transfers by future data source (count / $ volume):")

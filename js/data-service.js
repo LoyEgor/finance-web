@@ -13,11 +13,15 @@ class DataService {
             path: 'data' // Path to data folder in repo
         };
 
-        // In-memory cache for fetched files (key: sourceType:filename → data|null).
+        // In-memory cache for fetched files (key: source coordinates + filename → data|null).
         // Survives entire session, invalidated on config change.
         this._cache = new Map();
 
         this._inflight = new Map(); // dedupe concurrent fetches for the same key
+
+        // Bumped by clearCache: responses started under an older generation must
+        // not land in the fresh cache.
+        this._generation = 0;
 
         // Cached directory listing (Set of filenames). null = "unknown, fall back to probing".
         this._dirListing = null;
@@ -27,7 +31,8 @@ class DataService {
     }
 
     _cacheKey(filename) {
-        return `${this.config.sourceType}:${filename}`;
+        const c = this.config;
+        return `${c.sourceType}:${c.owner}/${c.repo}@${c.branch}/${c.path}:${filename}`;
     }
 
     isCached(filename) {
@@ -35,6 +40,7 @@ class DataService {
     }
 
     clearCache() {
+        this._generation++;
         this._cache.clear();
         this._inflight.clear();
         this._dirListing = null;
@@ -53,8 +59,6 @@ class DataService {
                 const files = await this._listRemoteFiles();
                 this._dirListing = new Set(files.map(f => f.name));
                 return this._dirListing;
-            } catch (e) {
-                return null;
             } finally {
                 this._dirListingInflight = null;
             }
@@ -73,7 +77,35 @@ class DataService {
         });
         if (!response.ok) throw new Error('Failed to list directory');
         const files = await response.json();
-        return Array.isArray(files) ? files : [];
+        if (!Array.isArray(files)) return [];
+        // The Contents API caps a directory listing at 1000 entries with no pagination
+        // and no truncation flag, so a full page may be incomplete — re-read via Trees.
+        if (files.length >= 1000) {
+            const viaTree = await this._listRemoteFilesViaTree();
+            if (viaTree) return viaTree;
+            console.warn('Directory listing may be truncated (1000 entries); Trees API fallback unavailable');
+        }
+        return files;
+    }
+
+    // Fallback for directories at the Contents API cap. Returns null when the tree
+    // itself is truncated or unreadable, so the caller keeps the Contents result.
+    async _listRemoteFilesViaTree() {
+        const apiUrl = `https://api.github.com/repos/${this.config.owner}/${this.config.repo}/git/trees/${this.config.branch}?recursive=1`;
+        const response = await fetch(apiUrl, {
+            headers: {
+                'Authorization': `Bearer ${this.config.githubToken}`,
+                'Accept': 'application/vnd.github.v3+json'
+            }
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (!data || data.truncated || !Array.isArray(data.tree)) return null;
+
+        const prefix = this.config.path ? `${this.config.path}/` : '';
+        return data.tree
+            .filter(n => n.type === 'blob' && n.path.startsWith(prefix) && !n.path.slice(prefix.length).includes('/'))
+            .map(n => ({ name: n.path.slice(prefix.length) }));
     }
 
     // ===========================================
@@ -87,7 +119,7 @@ class DataService {
                 this.config = { ...this.config, ...parsed };
                 // Ensure defaults
                 if (!this.config.branch) this.config.branch = 'main';
-                if (!this.config.path) this.config.path = 'data';
+                if (this.config.path === undefined || this.config.path === null) this.config.path = 'data';
             } catch (e) {
                 console.error('Failed to parse config', e);
             }
@@ -134,14 +166,17 @@ class DataService {
         // Dedupe concurrent requests for the same key (preload + on-demand may overlap)
         if (this._inflight.has(key)) return this._inflight.get(key);
 
+        const gen = this._generation;
         const promise = (this.isRemote() ? this._fetchRemote(filename) : this._fetchLocal(filename))
             .then(data => {
-                this._cache.set(key, data);
-                this._inflight.delete(key);
+                if (gen === this._generation) {
+                    this._cache.set(key, data);
+                    this._inflight.delete(key);
+                }
                 return data;
             })
             .catch(err => {
-                this._inflight.delete(key);
+                if (gen === this._generation) this._inflight.delete(key);
                 throw err;
             });
 
@@ -152,14 +187,10 @@ class DataService {
     async _fetchLocal(filename) {
         // Cache busting for local files
         const url = `./data/${filename}?t=${Date.now()}`;
-        try {
-            const response = await fetch(url);
-            if (!response.ok) return null;
-            return await response.json();
-        } catch (e) {
-            console.warn(`Local fetch failed for ${filename}`, e);
-            return null;
-        }
+        const response = await fetch(url);
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error(`Local fetch failed for ${filename}: ${response.status}`);
+        return await response.json();
     }
 
     async _fetchRemote(filename) {
@@ -278,7 +309,7 @@ class DataService {
         const filenames = await this.listDataFilenames();
         if (!filenames) return [];
 
-        const monthRegex = /^(\d{4})-(\d{2})\.json$/;
+        const monthRegex = /^(\d{4})-(0[1-9]|1[0-2])\.json$/;
         const available = [];
         filenames.forEach(name => {
             const match = name.match(monthRegex);
@@ -288,7 +319,7 @@ class DataService {
             const year = parseInt(match[1]);
             const monthIndex = parseInt(match[2]) - 1;
 
-            const monthName = (typeof MONTH_NAMES !== 'undefined')
+            const monthName = (typeof MONTH_NAMES !== 'undefined' && MONTH_NAMES[monthIndex])
                 ? MONTH_NAMES[monthIndex]
                 : new Date(year, monthIndex).toLocaleString('ru-RU', { month: 'long' });
 

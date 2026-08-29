@@ -49,7 +49,7 @@ A portfolio snapshot at the end of the month. Asset balances are fixed in these 
 
 ### 3. Transfers (`data/transfers-*.json`)
 Splitting into multiple files is supported (e.g., `transfers-2026-02.json`, `transfers-2026-02-15.json`, etc.).
-**Dev note:** Transfer assignment to a month is based strictly on the date inside the file (`meta.date`), not on file names. There are **two filtering modes**: annotations (`*`) and MoM comparisons use the interval between snapshot dates, while the top stats bar (P&L, Net Flow, Deposits, Withdrawals) filters transfers by **calendar month** (`YYYY-MM-01` — `YYYY-MM-31`).
+**Dev note:** Transfer assignment to a month is based strictly on the date inside the file (`meta.date`), not on file names. Every consumer uses the same window: annotations (`*`), MoM comparisons, the top stats bar (P&L, Net Flow, Deposits, Withdrawals) and the Transfers tab all take the transfers dated **between the previous and the current snapshot date**, so the visible rows always add up to the displayed figures.
 
 ---
 

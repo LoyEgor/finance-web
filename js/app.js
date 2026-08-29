@@ -6,7 +6,7 @@
 // ===========================================
 // CONFIGURATION
 // ===========================================
-const START_DATE = new Date('2026-01-01');
+const START_DATE = new Date(2026, 0, 1); // local time: an ISO date string would parse as UTC midnight
 
 const MONTH_NAMES = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -146,6 +146,12 @@ function getAssetKey(categoryId, source, name) {
     return `${categoryId}_${source}_${name}`.toLowerCase().replace(/\s+/g, '_');
 }
 
+// Category id normalised the same way getAssetKey normalises its parts, so
+// adjustments can be matched to a category by equality instead of by key prefix.
+function normalizeCategoryId(categoryId) {
+    return String(categoryId ?? '').toLowerCase().replace(/\s+/g, '_');
+}
+
 // ===========================================
 // UTILITY: Build Normalized Snapshot
 // ===========================================
@@ -204,12 +210,12 @@ function getAdjustmentsPerAsset(transfers, portfolioData) {
     transfers.forEach(t => {
         if (t.type === 'deposit') {
             const key = getAssetKey(t.category, t.source, t.name);
-            if (!adjustments[key]) adjustments[key] = { deposits: 0, withdraws: 0, net: 0 };
+            if (!adjustments[key]) adjustments[key] = { deposits: 0, withdraws: 0, net: 0, categoryId: normalizeCategoryId(t.category) };
             adjustments[key].deposits += t.amount;
             adjustments[key].net += t.amount;
         } else if (t.type === 'withdraw') {
             const key = getAssetKey(t.category, t.source, t.name);
-            if (!adjustments[key]) adjustments[key] = { deposits: 0, withdraws: 0, net: 0 };
+            if (!adjustments[key]) adjustments[key] = { deposits: 0, withdraws: 0, net: 0, categoryId: normalizeCategoryId(t.category) };
             adjustments[key].withdraws += t.amount;
             adjustments[key].net -= t.amount;
         } else if (t.type === 'move') {
@@ -217,11 +223,11 @@ function getAdjustmentsPerAsset(transfers, portfolioData) {
             const fromKey = getAssetKey(t.from_category, t.from_source, t.from_name);
             const toKey = getAssetKey(t.to_category, t.to_source, t.to_name);
 
-            if (!adjustments[fromKey]) adjustments[fromKey] = { deposits: 0, withdraws: 0, net: 0 };
+            if (!adjustments[fromKey]) adjustments[fromKey] = { deposits: 0, withdraws: 0, net: 0, categoryId: normalizeCategoryId(t.from_category) };
             adjustments[fromKey].withdraws += t.amount;
             adjustments[fromKey].net -= t.amount;
 
-            if (!adjustments[toKey]) adjustments[toKey] = { deposits: 0, withdraws: 0, net: 0 };
+            if (!adjustments[toKey]) adjustments[toKey] = { deposits: 0, withdraws: 0, net: 0, categoryId: normalizeCategoryId(t.to_category) };
             adjustments[toKey].deposits += t.amount;
             adjustments[toKey].net += t.amount;
         }
@@ -245,6 +251,9 @@ function calculateDelta(currentVal, previousVal, adjustment = 0) {
     } else if (currentVal > 0 && adjustedStart === 0) {
         // New asset with only new deposits - no real gain
         percent = 0;
+    } else if (Math.abs(delta) > 0.005) {
+        // Nothing to measure against, but the money change is real
+        percent = null;
     }
 
     return {
@@ -313,9 +322,10 @@ function compareSnapshots(currentSnapshot, previousSnapshot, adjustments = {}) {
         const previousCat = previousSnapshot?.categories?.[catId];
 
         // Sum adjustments for this category
+        const normCatId = normalizeCategoryId(catId);
         let catAdjustment = 0;
-        Object.entries(adjustments).forEach(([key, adj]) => {
-            if (key.startsWith(catId + '_')) {
+        Object.values(adjustments).forEach(adj => {
+            if (adj.categoryId === normCatId) {
                 catAdjustment += adj.net;
             }
         });
@@ -378,6 +388,7 @@ function updateForecastUI(stats) {
 
     // Format helpers
     const fmtPct = (val) => {
+        if (val === null || val === undefined) return '—';
         const sign = val >= 0 ? '+' : '';
         return `${sign}${(val * 100).toFixed(2)}%`;
     };
@@ -422,10 +433,10 @@ function updateForecastUI(stats) {
 
     if (monthEl) {
         const invested = stats.currentMonthStart + stats.currentMonthDeposits;
-        monthEl.parentElement.title = `Profit relative to invested capital this period\n\n${fmtMoney(stats.monthProfit)} / (${fmtMoney(stats.currentMonthStart)} + ${fmtMoney(stats.currentMonthDeposits)})\n= ${fmtMoney(stats.monthProfit)} / ${fmtMoney(invested)}\n= ${(stats.monthYield * 100).toFixed(2)}%`;
+        monthEl.parentElement.title = `Profit relative to invested capital this period\n\n${fmtMoney(stats.monthProfit)} / (${fmtMoney(stats.currentMonthStart)} + ${fmtMoney(stats.currentMonthDeposits)})\n= ${fmtMoney(stats.monthProfit)} / ${fmtMoney(invested)}\n= ${fmtPct(stats.monthYield)}`;
     }
     if (ytdEl) {
-        const factors = stats.yields.map(y => `(1 + ${(y * 100).toFixed(2)}%)`).join(' × ');
+        const factors = stats.yields.filter(y => y !== null).map(y => `(1 + ${(y * 100).toFixed(2)}%)`).join(' × ');
         ytdEl.parentElement.title = `Compounded return since Jan 1st\n\n${factors} - 1\n= ${(stats.ytd * 100).toFixed(2)}%\nYTD P&L: ${fmtMoney(stats.currentEndBalance)} - ${fmtMoney(stats.accumulatedNetFlow)} = ${fmtMoney(stats.ytdProfit)}`;
     }
     if (annualEl) {
@@ -495,7 +506,7 @@ function updateForecastUI(stats) {
             projAvgYieldEl.className = 'forecast-value';
             if (p.avgYield > 0) projAvgYieldEl.classList.add('perf-positive');
             else if (p.avgYield < 0) projAvgYieldEl.classList.add('perf-negative');
-            const samples = Math.max(0, stats.monthsPassed - 1);
+            const samples = p.sampleMonths;
             projAvgYieldEl.parentElement.title = `Average monthly yield across ${samples} month(s) (excluding Jan baseline).\nUsed to project the portfolio forward to year-end.`;
         }
 
@@ -582,14 +593,9 @@ function calculateSimpleYield(startBalance, endBalance, transfers) {
     const profit = endBalance - (startBalance + netFlow);
     const investedCapital = startBalance + deposits;
 
-    // Protection against division by zero
-    if (investedCapital <= 0.01) {
-        // If no capital was invested, but there is profit?
-        // Edge case: Air dropped tokens with 0 cost basis.
-        // Cap calculation or return 0? 
-        if (profit > 0) return 1.0;
-        return 0;
-    }
+    // No cost basis (fresh bucket, airdrop, missing history) — the return is not
+    // measurable. null keeps it out of compounding, volatility and Sharpe.
+    if (investedCapital <= 0.01) return null;
 
     return profit / investedCapital;
 }
@@ -599,6 +605,7 @@ function calculateSimpleYield(startBalance, endBalance, transfers) {
 function calculateYTD(yields) {
     let compounded = 1;
     yields.forEach(r => {
+        if (r === null || r === undefined) return;
         compounded *= (1 + r);
     });
     return compounded - 1;
@@ -627,6 +634,9 @@ function buildCategoryTransfers(transfers, catId) {
         } else if (t.type === 'withdraw' && t.category === catId) {
             result.push({ type: 'withdraw', amount: t.amount });
         } else if (t.type === 'move') {
+            // A move inside one bucket is not a flow: counting both legs would
+            // inflate the gross deposits that divide the bucket's yield.
+            if (t.from_category === t.to_category) return;
             if (t.from_category === catId) result.push({ type: 'withdraw', amount: t.amount });
             if (t.to_category === catId) result.push({ type: 'deposit', amount: t.amount });
         }
@@ -654,10 +664,10 @@ function buildStockSubTransfersAll(transfers) {
         stocks_etf_asia: [],
         stocks_etf: []
     };
-    const addTo = (key, type, amount) => {
+    const addTo = (key, type, amount, aggregate = true) => {
         if (!out[key]) return;
         out[key].push({ type, amount });
-        if (key !== 'stocks_companies') {
+        if (aggregate && key !== 'stocks_companies') {
             out.stocks_etf.push({ type, amount });
         }
     };
@@ -669,14 +679,14 @@ function buildStockSubTransfersAll(transfers) {
             const key = stockSubKeyFor(t.name);
             if (key) addTo(key, 'withdraw', t.amount);
         } else if (t.type === 'move') {
-            if (t.from_category === 'stocks') {
-                const key = stockSubKeyFor(t.from_name);
-                if (key) addTo(key, 'withdraw', t.amount);
-            }
-            if (t.to_category === 'stocks') {
-                const key = stockSubKeyFor(t.to_name);
-                if (key) addTo(key, 'deposit', t.amount);
-            }
+            const fromKey = t.from_category === 'stocks' ? stockSubKeyFor(t.from_name) : null;
+            const toKey = t.to_category === 'stocks' ? stockSubKeyFor(t.to_name) : null;
+            // Both legs in the same sub-bucket: no flow at all. Both legs in ETF
+            // regions: a flow for the regions, but none for the stocks_etf aggregate.
+            if (fromKey && toKey && fromKey === toKey) return;
+            const bothEtf = !!fromKey && !!toKey && fromKey !== 'stocks_companies' && toKey !== 'stocks_companies';
+            if (fromKey) addTo(fromKey, 'withdraw', t.amount, !bothEtf);
+            if (toKey) addTo(toKey, 'deposit', t.amount, !bothEtf);
         }
     });
     return out;
@@ -711,13 +721,15 @@ function stdDev(arr) {
 // Risk-free rate: 3.5% annual (matches the Deposit benchmark used elsewhere).
 function bucketStats(monthlyYields, compoundedSeries) {
     if (!monthlyYields || monthlyYields.length === 0) {
-        return { ytd: 0, vol: null, sharpe: null, monthsTracked: 0 };
+        return { ytd: null, vol: null, sharpe: null, monthsTracked: 0 };
     }
-    // Skip Jan zero-km baseline (idx=0) and any nulls.
-    const real = monthlyYields.slice(1).filter(y => y !== null && y !== undefined && isFinite(y));
+    // Skip the zero-km baseline (first month with data) and any nulls.
+    const baselineIdx = monthlyYields.findIndex(y => y !== null && y !== undefined);
+    const real = monthlyYields.slice(baselineIdx + 1).filter(y => y !== null && y !== undefined && isFinite(y));
     const ytd = (compoundedSeries && compoundedSeries.length)
-        ? (compoundedSeries[compoundedSeries.length - 1] ?? 0) : 0;
-    const monthsPassed = monthlyYields.length;
+        ? (compoundedSeries[compoundedSeries.length - 1] ?? null) : null;
+    // Annualise over return periods, not calendar months: the baseline yields nothing.
+    const monthsPassed = real.length;
 
     let vol = null;
     let sharpe = null;
@@ -725,7 +737,7 @@ function bucketStats(monthlyYields, compoundedSeries) {
         const std = stdDev(real);
         if (std !== null && isFinite(std)) {
             vol = std * Math.sqrt(12);
-            if (vol > 0.0005 && monthsPassed >= 2 && (1 + ytd) > 0) {
+            if (vol > 0.0005 && monthsPassed >= 2 && ytd !== null && (1 + ytd) > 0) {
                 const annualisedReturn = Math.pow(1 + ytd, 12 / monthsPassed) - 1;
                 sharpe = (annualisedReturn - 0.035) / vol;
             }
@@ -782,6 +794,8 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
 
     // Iterate sequentially through months to build the chain
     let prevSnapshotDate = null;
+    let baselineDone = false; // the first month WITH data is the zero-km baseline
+    let dataMonths = 0;
     for (let idx = 0; idx < sequence.length; idx++) {
         const item = sequence[idx];
 
@@ -790,19 +804,21 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         monthLabels.push(MONTH_NAMES[mIdx].substring(0, 3));
 
         if (!item.data) {
-            yields.push(0);
-            netFlows.push(0);
-            Object.keys(categoryYields).forEach(catId => categoryYields[catId].push(0));
-            SUB_STOCK_KEYS.forEach(k => subStocksYields[k].push(0));
+            // No snapshot: nothing measured. Keep every series aligned with
+            // monthLabels by pushing null rather than a fake flat month.
+            yields.push(null);
+            netFlows.push(null);
+            Object.keys(categoryYields).forEach(catId => categoryYields[catId].push(null));
+            SUB_STOCK_KEYS.forEach(k => subStocksYields[k].push(null));
             benchmarkYields.vt.push(null);
             benchmarkYields.voo.push(null);
-            benchmarkYields.deposit.push(0);
+            benchmarkYields.deposit.push(null);
             continue;
         }
 
         const endBalance = calculateTotalBalance(item.data);
         const startBalance = prevBalance;
-        const currentSnapshotDate = item.data.meta?.date || item.id;
+        const currentSnapshotDate = item.data.meta?.date || `${item.id}-31`;
 
         // Date-based transfer filtering:
         // Keep transfers whose date falls in the current period
@@ -847,14 +863,16 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
             currSubStocksBalances.stocks_etf_europe +
             currSubStocksBalances.stocks_etf_asia;
 
-        // Ensure all seen categories have a series (zero-fill past months)
+        // Every category seen so far keeps a series entry each month, so a fully
+        // exited category advances with nulls instead of freezing at its last value.
         const allCatIds = new Set([
+            ...Object.keys(categoryYields),
             ...Object.keys(prevCategoryBalances),
             ...Object.keys(currCategoryBalances)
         ]);
         allCatIds.forEach(catId => {
             if (!categoryYields[catId]) {
-                categoryYields[catId] = new Array(idx).fill(0);
+                categoryYields[catId] = new Array(idx).fill(null);
             }
         });
 
@@ -862,8 +880,10 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         let yieldVal = 0;
         let profitVal = 0;
 
-        // ZERO KILOMETER LOGIC FOR FORECAST
-        if (idx === 0) {
+        // ZERO KILOMETER LOGIC FOR FORECAST — the first month that has data
+        const isBaseline = !baselineDone;
+        baselineDone = true;
+        if (isBaseline) {
             yieldVal = 0;
             profitVal = 0;
             accumulatedNetFlow += endBalance;
@@ -879,14 +899,14 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
                 const catStart = prevCategoryBalances[catId] || 0;
                 const catEnd = currCategoryBalances[catId] || 0;
                 if (catStart === 0 && catEnd === 0) {
-                    categoryYields[catId].push(0);
+                    categoryYields[catId].push(null);
                     return;
                 }
                 const catTransfers = buildCategoryTransfers(monthTransfers, catId);
                 // If category appears fresh without tracked inflow, treat as 0 to avoid wild 100% spike
                 const catDeposits = catTransfers.reduce((s, t) => s + (t.type === 'deposit' ? t.amount : 0), 0);
                 if (catStart === 0 && catDeposits === 0 && catEnd > 0) {
-                    categoryYields[catId].push(0);
+                    categoryYields[catId].push(null);
                     return;
                 }
                 categoryYields[catId].push(calculateSimpleYield(catStart, catEnd, catTransfers));
@@ -898,13 +918,13 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
                 const subStart = prevSubStocksBalances[subKey] || 0;
                 const subEnd = currSubStocksBalances[subKey] || 0;
                 if (subStart === 0 && subEnd === 0) {
-                    subStocksYields[subKey].push(0);
+                    subStocksYields[subKey].push(null);
                     return;
                 }
                 const subTrans = subTransfersByKey[subKey] || [];
                 const subDeposits = subTrans.reduce((s, t) => s + (t.type === 'deposit' ? t.amount : 0), 0);
                 if (subStart === 0 && subDeposits === 0 && subEnd > 0) {
-                    subStocksYields[subKey].push(0);
+                    subStocksYields[subKey].push(null);
                     return;
                 }
                 subStocksYields[subKey].push(calculateSimpleYield(subStart, subEnd, subTrans));
@@ -912,9 +932,9 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         }
 
         // Benchmark monthly yields
-        if (idx === 0 || !prevSnapshotDate) {
-            benchmarkYields.vt.push(idx === 0 ? 0 : null);
-            benchmarkYields.voo.push(idx === 0 ? 0 : null);
+        if (isBaseline) {
+            benchmarkYields.vt.push(0);
+            benchmarkYields.voo.push(0);
             benchmarkYields.deposit.push(0);
         } else {
             const d0 = new Date(prevSnapshotDate);
@@ -934,7 +954,8 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         }
 
         yields.push(yieldVal);
-        netFlows.push(idx === 0 ? 0 : mNetFlow);
+        netFlows.push(isBaseline ? 0 : mNetFlow);
+        dataMonths++;
 
         if (item.id === currentMonthId) {
             currentMonthYield = yieldVal;
@@ -961,23 +982,26 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     const currentEndBalance = prevBalance;
     const ytdProfit = currentEndBalance - accumulatedNetFlow;
 
-    // Projected Annual based on this YTD and the number of months passed
-    const monthsPassed = sequence.length;
-    const projected = calculateProjectedAnnual(ytd, monthsPassed);
+    // Projected Annual: annualise over the real return periods (months with data
+    // minus the zero-km baseline), not over elapsed calendar months.
+    const returnPeriods = Math.max(0, dataMonths - 1);
+    const projected = calculateProjectedAnnual(ytd, returnPeriods);
 
-    // Projected Profit: Extra money on top of current balance
-    const projectedProfit = currentEndBalance * projected;
+    // Projected Profit: the projected return applied to the invested capital the
+    // percentage is measured on — the end balance already contains the YTD gain.
+    const projectedProfit = accumulatedNetFlow * projected;
 
     // --- Projection (average-based, to end of year) ---
-    // Skip idx=0 (zero kilometer baseline)
-    const realYields = yields.slice(1);
-    const realNetFlows = netFlows.slice(1);
+    // Skip the zero-km baseline and any month without a snapshot
+    const baselineIdx = yields.findIndex(y => y !== null);
+    const realYields = yields.slice(baselineIdx + 1).filter(y => y !== null);
+    const realNetFlows = netFlows.slice(baselineIdx + 1).filter(n => n !== null);
     const avgYield = realYields.length > 0
         ? realYields.reduce((s, y) => s + y, 0) / realYields.length : 0;
     const avgNetFlow = realNetFlows.length > 0
         ? realNetFlows.reduce((s, n) => s + n, 0) / realNetFlows.length : 0;
 
-    const remainingMonths = Math.max(0, 12 - monthsPassed);
+    const remainingMonths = Math.max(0, 12 - sequence.length);
 
     let projectedEndBalance = currentEndBalance;
     for (let m = 0; m < remainingMonths; m++) {
@@ -993,6 +1017,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
     const projection = {
         avgYield,
         avgNetFlow,
+        sampleMonths: realYields.length,
         remainingMonths,
         projectedEndBalance,
         projectedEndPnL,
@@ -1087,7 +1112,7 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
         ytdProfit: ytdProfit,
         projected: projected,
         projectedProfit: projectedProfit,
-        monthsPassed: monthsPassed,
+        monthsPassed: returnPeriods,
         yields: yields,
         currentEndBalance: currentEndBalance,
         accumulatedNetFlow: accumulatedNetFlow,
@@ -1120,8 +1145,10 @@ async function calculateYearStats(currentMonthId, benchmarksData) {
 function generateCandidateMonths() {
     const months = [];
     const current = new Date(START_DATE.getFullYear(), START_DATE.getMonth(), 1);
-    // Generate months until the end of the current year (December 31st)
-    const endOfYear = new Date(START_DATE.getFullYear(), 11, 31); // Dec 31st
+    // Generate months until the end of the current calendar year, so the list keeps
+    // growing across year boundaries instead of freezing at the start year.
+    const endYear = Math.max(START_DATE.getFullYear(), new Date().getFullYear());
+    const endOfYear = new Date(endYear, 11, 31);
 
     while (current <= endOfYear) {
         const year = current.getFullYear();
@@ -1334,59 +1361,57 @@ function calculateTotalBalance(portfolioData) {
 // ===========================================
 // CALCULATE PERFORMANCE (PnL)
 // ===========================================
-function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth = false, calendarTransfers = null) {
-    // Calculate calendar-month deposits/withdrawals for UI display
-    let calDeposits = 0;
-    let calWithdraws = 0;
+function calculatePerformance(startBalance, endBalance, transfers, isFirstMonth = false) {
+    // Every figure in the stats bar comes from the same snapshot-to-snapshot set,
+    // so deposits - withdrawals = net flow is reconcilable against the Transfers tab.
+    let totalDeposits = 0;
+    let totalWithdraws = 0;
     const depositDetails = [];
     const withdrawDetails = [];
-    const calSrc = calendarTransfers || transfers || [];
-    calSrc.forEach(t => {
+    (transfers || []).forEach(t => {
         if (t.type === 'deposit') {
-            calDeposits += t.amount;
+            totalDeposits += t.amount;
             depositDetails.push({ name: t.name, source: t.source, amount: t.amount });
         } else if (t.type === 'withdraw') {
-            calWithdraws += t.amount;
+            totalWithdraws += t.amount;
             withdrawDetails.push({ name: t.name, source: t.source, amount: t.amount });
         }
     });
 
     // ZERO KILOMETER LOGIC (First Month)
+    // The whole opening balance is the deposit — same basis calculateYearStats
+    // uses for the baseline month, so the tile and the YTD P&L agree.
     if (isFirstMonth) {
         return {
             startBalance: 0,
             endBalance,
-            totalDeposits: calDeposits,
-            totalWithdraws: calWithdraws,
-            depositDetails,
-            withdrawDetails,
-            netFlow: calDeposits - calWithdraws,
+            totalDeposits: endBalance,
+            totalWithdraws: 0,
+            depositDetails: [],
+            withdrawDetails: [],
+            netFlow: endBalance,
             profit: 0, // Forced 0
             yieldPercent: 0 // Forced 0
         };
     }
 
     // NORMAL LOGIC
-    const netFlow = calDeposits - calWithdraws;
+    const netFlow = totalDeposits - totalWithdraws;
 
     // Profit = EndBalance - (StartBalance + NetFlow)
     const profit = endBalance - (startBalance + netFlow);
 
     // Yield % = Profit / (StartBalance + Deposits) * 100
-    const investedCapital = startBalance + calDeposits;
+    const investedCapital = startBalance + totalDeposits;
 
-    let yieldPercent = 0;
-    if (investedCapital > 0.01) {
-        yieldPercent = (profit / investedCapital) * 100;
-    } else if (profit > 0) {
-        yieldPercent = 100;
-    }
+    // No invested capital means no measurable return — 0, never a fabricated 100%.
+    const yieldPercent = investedCapital > 0.01 ? (profit / investedCapital) * 100 : 0;
 
     return {
         startBalance,
         endBalance,
-        totalDeposits: calDeposits,
-        totalWithdraws: calWithdraws,
+        totalDeposits,
+        totalWithdraws,
         depositDetails,
         withdrawDetails,
         netFlow,
@@ -1579,6 +1604,20 @@ async function fetchTransfersForMonth(monthId) {
         .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// Inclusive list of month ids from `fromMonthId` to `toMonthId`. The snapshot for a
+// middle month may be missing while its transfer files still belong to the window.
+function monthIdsFromTo(fromMonthId, toMonthId) {
+    const ids = [];
+    let [year, month] = fromMonthId.split('-').map(Number);
+    const [toYear, toMonth] = toMonthId.split('-').map(Number);
+    while (year < toYear || (year === toYear && month <= toMonth)) {
+        ids.push(`${year}-${String(month).padStart(2, '0')}`);
+        month += 1;
+        if (month > 12) { month = 1; year += 1; }
+    }
+    return ids;
+}
+
 // ===========================================
 // LOAD MONTH DATA
 // ===========================================
@@ -1603,15 +1642,14 @@ async function loadMonth(monthId) {
     }
 
     try {
-        // Load all data in parallel: Current Portfolio, Previous Portfolio, Current Transfers, Previous Transfers
-        const [currentData, prevData, monthTransfers, prevMonthTransfers] = await Promise.all([
+        // Load all data in parallel: Current Portfolio, Previous Portfolio, and the
+        // transfer files of every month the snapshot window spans (gaps included).
+        const windowMonthIds = prevMonthId ? monthIdsFromTo(prevMonthId, monthId) : [monthId];
+        const [currentData, prevData, allTransferGroups] = await Promise.all([
             fetchPortfolioData(monthId),
             prevMonthId ? fetchPortfolioData(prevMonthId) : Promise.resolve(null),
-            fetchTransfersForMonth(monthId),
-            prevMonthId ? fetchTransfersForMonth(prevMonthId) : Promise.resolve([])
+            Promise.all(windowMonthIds.map(id => fetchTransfersForMonth(id))).then(groups => groups.flat())
         ]);
-
-        const flatTransfers = monthTransfers.flatMap(g => g.transfers);
 
         // Check if current month data exists
         if (!currentData) {
@@ -1631,10 +1669,9 @@ async function loadMonth(monthId) {
 
         // --- DATE-BASED TRANSFER FILTERING ---
         // Transfers belong to the period between two snapshots based on their meta.date.
-        // Combine all transfer groups from prev + current month, then filter by snapshot dates.
-        const allTransferGroups = [...prevMonthTransfers, ...monthTransfers];
-        const prevSnapshotDate = prevData?.meta?.date || null;
-        const currentSnapshotDate = currentData.meta?.date || monthId;
+        // Filter the window's transfer groups by the two snapshot dates.
+        const prevSnapshotDate = prevData ? (prevData.meta?.date || `${prevMonthId}-31`) : null;
+        const currentSnapshotDate = currentData.meta?.date || `${monthId}-31`;
 
         const periodGroups = allTransferGroups.filter(g => {
             if (!prevSnapshotDate) return g.date <= currentSnapshotDate;
@@ -1642,12 +1679,6 @@ async function loadMonth(monthId) {
         });
         const flowTransfers = periodGroups.flatMap(g => g.transfers);
         // -----------------------------
-
-        // --- CALENDAR-MONTH TRANSFER FILTERING (for top bar stats) ---
-        const calMonthStart = monthId + '-01';
-        const calMonthEnd = monthId + '-31';
-        const calendarGroups = allTransferGroups.filter(g => g.date >= calMonthStart && g.date <= calMonthEnd);
-        const calendarTransfers = calendarGroups.flatMap(g => g.transfers);
 
         // Annotate assets with transfer info (for asterisk display, no value change)
         annotateTransfers(currentPortfolioData, flowTransfers);
@@ -1667,8 +1698,12 @@ async function loadMonth(monthId) {
         const endBalance = calculateTotalBalance(currentPortfolioData);
         const startBalance = prevData ? calculateTotalBalance(prevData) : 0;
 
-        // Calculate performance (PnL uses snapshot-filtered, stats use calendar-filtered)
-        const performance = calculatePerformance(startBalance, endBalance, flowTransfers, isFirstMonth);
+        // Without a previous snapshot there is nothing to measure against: treat the
+        // month as the zero-km baseline instead of booking the whole balance as profit.
+        const isBaselineMonth = isFirstMonth || !prevData;
+
+        // Calculate performance (snapshot-to-snapshot window)
+        const performance = calculatePerformance(startBalance, endBalance, flowTransfers, isBaselineMonth);
 
         // --- FORECASTING 2.0 ---
         try {
@@ -1692,9 +1727,9 @@ async function loadMonth(monthId) {
         // -----------------------
 
         // Update UI
-        updatePerformanceUI(performance, isFirstMonth, flatTransfers.length > 0);
+        updatePerformanceUI(performance, isBaselineMonth, flowTransfers.length > 0);
         renderPortfolio(currentData, currentComparison);
-        renderTransfers(monthTransfers, currentData);
+        renderTransfers(periodGroups, currentData);
 
         // Reset to portfolio view
         switchTab('portfolio');
@@ -1768,16 +1803,27 @@ function renderPortfolio(data, comparison = null) {
             if (assetComp.status === 'ghost') {
                 // Find or create category
                 let cat = categories.find(c => c.id === assetComp.categoryId);
-                if (cat) {
-                    // Add ghost item
-                    cat.items.push({
-                        name: assetComp.name,
-                        source: assetComp.source,
-                        val: 0,
-                        isGhost: true,
-                        key: key
-                    });
+                if (!cat) {
+                    // Whole category exited: rebuild an empty block from the unified
+                    // definitions / previous snapshot so the exit stays visible.
+                    const unified = globalCategories[assetComp.categoryId];
+                    const prevCat = previousSnapshot?.categories?.[assetComp.categoryId];
+                    cat = {
+                        id: assetComp.categoryId,
+                        title: unified?.title || prevCat?.title || assetComp.categoryId,
+                        color: unified?.color || prevCat?.color || '#a0aec0',
+                        items: []
+                    };
+                    categories.push(cat);
                 }
+                // Add ghost item
+                cat.items.push({
+                    name: assetComp.name,
+                    source: assetComp.source,
+                    val: 0,
+                    isGhost: true,
+                    key: key
+                });
             }
         });
     }
@@ -1811,14 +1857,19 @@ function renderPortfolio(data, comparison = null) {
 
     // Helper to format delta badge
     function formatDeltaBadge(deltaInfo) {
-        if (!deltaInfo || deltaInfo.percent === 0) return '';
-        const sign = deltaInfo.percent >= 0 ? '+' : '';
-        const cls = deltaInfo.percent >= 0 ? 'positive' : 'negative';
+        if (!deltaInfo) return '';
+        const hasPercent = deltaInfo.percent !== null && deltaInfo.percent !== 0;
+        const deltaVal = deltaInfo.delta;
+        const hasMoney = Math.abs(deltaVal) > 0.005;
+        if (!hasPercent && !hasMoney) return '';
+        const cls = (hasPercent ? deltaInfo.percent >= 0 : deltaVal >= 0) ? 'positive' : 'negative';
 
         // Calculate money delta
-        const deltaVal = deltaInfo.delta;
         const deltaMoney = (deltaVal >= 0 ? '+' : '') + formatMoney(deltaVal);
-        const percentTxt = `${sign}${deltaInfo.percent.toFixed(1)}%`;
+        // Without a measurable percent the badge stays in money on both sides.
+        const percentTxt = hasPercent
+            ? `${deltaInfo.percent >= 0 ? '+' : ''}${deltaInfo.percent.toFixed(1)}%`
+            : deltaMoney;
 
         return `<span class="delta ${cls}" 
                      data-mode="percent" 

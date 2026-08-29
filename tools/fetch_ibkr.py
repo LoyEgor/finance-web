@@ -14,8 +14,10 @@ Run:  python3 tools/fetch_ibkr.py            # human summary
       python3 tools/fetch_ibkr.py --out tools/out/ibkr.json
 """
 import argparse
+import datetime
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -29,6 +31,17 @@ RETRY_SLEEP = {"1009": 5, "1019": 5, "1018": 10, "1001": 5, "1004": 5, "1005": 5
 
 # assetCategory -> our category id (cash is taken from CashReport, not positions)
 STOCK_CATS = {"STK", "ETF", "FUND", "BOND", "IND", "WAR", "OPT", "FUT"}
+
+# Manifest channel -> the Flex container element whose PRESENCE proves the query
+# includes that section. An absent container is a coverage gap; a present-but-empty
+# one is data ("nothing happened in the period").
+SECTION_TAGS = {
+    "trades": "Trades", "cashtx": "CashTransactions", "transfers": "Transfers",
+    "income": "CashTransactions", "positions": "OpenPositions", "cash": "CashReport",
+}
+
+_MONTHS = {m: f"{i:02d}" for i, m in enumerate(
+    ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"), 1)}
 
 
 def load_env():
@@ -78,10 +91,33 @@ def f(el, attr, default=0.0):
 
 
 def _ymd(s):
-    # Canonical YYYYMMDD. Flex date fields may arrive dashed (YYYY-MM-DD) or with a
-    # time suffix (YYYYMMDD;HHMMSS / YYYY-MM-DD HH:MM:SS) depending on the query's
-    # date-format config; strip both so date comparisons never silently mismatch.
-    return (s or "").replace("-", "")[:8]
+    """Canonical YYYYMMDD from any date format a Flex query can be configured to emit
+    (YYYYMMDD, YYYY-MM-DD, MM/dd/yyyy, dd-MMM-yy), with an optional time suffix.
+
+    An unrecognised format RAISES rather than passing the input through: a passthrough
+    compares lexicographically against YYYYMMDD bounds, so every row silently falls
+    out of the window and the statement reads as an empty period.
+    """
+    raw = (s or "").strip()
+    if not raw:
+        return ""
+    s = re.split(r"[;T ]", raw, 1)[0]
+    digits = s.replace("-", "").replace("/", "")
+    if len(digits) == 8 and digits.isdigit():
+        return digits[4:] + digits[:4] if "/" in s else digits  # MMddyyyy -> yyyyMMdd
+    m = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})", s)
+    if m and m.group(2).upper() in _MONTHS:
+        day, mon, year = m.group(1), _MONTHS[m.group(2).upper()], m.group(3)
+        return f"{year if len(year) == 4 else '20' + year}{mon}{int(day):02d}"
+    raise ValueError(f"unrecognised Flex date format: {raw!r}")
+
+
+def in_window(rows, since, until):
+    """Rows inside the reconciliation period (since, until] — open left, closed right.
+    Open left because `since` is the PREVIOUS snapshot date, whose rows were already
+    counted in that period; closed right because the statement's reporting period is
+    routinely wider than the snapshot period."""
+    return [r for r in rows if since < _ymd(r["date"]) <= until]
 
 
 def parse(root):
@@ -90,9 +126,11 @@ def parse(root):
         "source": "IBKR",
         "meta": {k: stmt.get(k) for k in ("accountId", "fromDate", "toDate", "period", "whenGenerated")} if stmt is not None else {},
         "nav": None, "base_cash": None, "fx": {"USD": 1.0}, "positions": [], "cash": [], "trades": [], "deposits_withdrawals": [], "income": [], "transfers": [],
+        "sections": {k: False for k in SECTION_TAGS},
     }
     if stmt is None:
         return out
+    out["sections"] = {k: stmt.find(f".//{tag}") is not None for k, tag in SECTION_TAGS.items()}
 
     fx_date = {}  # ConversionRates carry a daily series — keep the latest reportDate per currency
     for cr in stmt.findall(".//ConversionRate"):
@@ -153,8 +191,9 @@ def to_snapshot_items(data):
     """IBKR positions + cash as snapshot rows: {category, source, name, val, perf}."""
     items = []
     for p in data["positions"]:
-        cat = "usd" if p["assetCategory"] == "CASH" else "stocks"  # default (missing category) → stocks
-        items.append({"category": cat, "source": "IBKR", "name": p["symbol"],
+        if p["assetCategory"] == "CASH":
+            continue  # cash is taken from CashReport below; emitting both double-counts it
+        items.append({"category": "stocks", "source": "IBKR", "name": p["symbol"],  # missing category → stocks
                       "val": p["value_usd"], "qty": p["quantity"], "unrealizedPnl": p["unrealizedPnl"]})
     # USD is the base currency; consolidate ALL IBKR cash (any currency) into one USD line.
     total = data["base_cash"]
@@ -165,35 +204,38 @@ def to_snapshot_items(data):
     return items
 
 
-def flows_manifest(data, since):
+def flows_manifest(data, since, until):
     """Coverage manifest built from the REAL parsed statement — NOT a fabricated
-    full-span assertion. Per-channel rows are the actual section lengths filtered to
-    >= since; the window is the statement's own reporting period (meta.fromDate..toDate),
-    so coverage_gate fails CRITICAL when a section is empty/missing or the statement
-    period doesn't span the snapshot period. Shared by the --flows CLI and the
-    orchestrator so both gate on identical, real data.
+    full-span assertion. Per-channel rows are the actual section lengths inside
+    (since, until]; the window is the statement's own reporting period
+    (meta.fromDate..toDate), so coverage_gate fails CRITICAL when the statement
+    period doesn't span the snapshot period. `queried` comes from the SECTION's
+    presence in the statement, so a Flex query that lost a section reads as
+    never-queried instead of "queried, nothing happened". Shared by the --flows CLI
+    and the orchestrator so both gate on identical, real data.
 
     since: period start "YYYY-MM-DD"|"YYYYMMDD" (the prev snapshot date).
+    until: period end, i.e. the snapshot date being written.
     """
-    since = _ymd(since)
+    since, until = _ymd(since), _ymd(until)
     meta = data.get("meta") or {}
     frm, to = _ymd(meta.get("fromDate")), _ymd(meta.get("toDate"))
     window = f"{frm}..{to}"  # statement reporting period; coverage_gate checks it spans the snapshot period
+    sections = data.get("sections") or {}
 
-    def in_window(rows):
-        return [r for r in rows if _ymd(r["date"]) >= since]
+    def ch(name, window, rows):
+        if sections.get(name):
+            return {"queried": True, "window": window, "rows": rows}
+        return {"queried": False, "window": window, "rows": 0,
+                "error": f"{SECTION_TAGS[name]} section absent from the statement — the Flex query does not include it"}
 
-    trades_in = in_window(data["trades"])
-    cashtx_in = in_window(data["deposits_withdrawals"])
-    transfers_in = in_window(data["transfers"])
-    income_in = in_window(data["income"])
     return {
-        "trades":    {"queried": True, "window": window, "rows": len(trades_in)},
-        "cashtx":    {"queried": True, "window": window, "rows": len(cashtx_in)},
-        "transfers": {"queried": True, "window": window, "rows": len(transfers_in)},
-        "income":    {"queried": True, "window": window, "rows": len(income_in)},
-        "positions": {"queried": True, "window": "as-of-end", "rows": len(data["positions"])},
-        "cash":      {"queried": True, "window": "as-of-end", "rows": len(data["cash"])},
+        "trades":    ch("trades", window, len(in_window(data["trades"], since, until))),
+        "cashtx":    ch("cashtx", window, len(in_window(data["deposits_withdrawals"], since, until))),
+        "transfers": ch("transfers", window, len(in_window(data["transfers"], since, until))),
+        "income":    ch("income", window, len(in_window(data["income"], since, until))),
+        "positions": ch("positions", "as-of-end", len(data["positions"])),
+        "cash":      ch("cash", "as-of-end", len(data["cash"])),
     }
 
 
@@ -201,7 +243,8 @@ def main():
     ap = argparse.ArgumentParser(description="Pull & normalize an IBKR Activity Flex statement (read-only).")
     ap.add_argument("--raw", action="store_true", help="print full normalized JSON")
     ap.add_argument("--out", help="write normalized JSON to this path")
-    ap.add_argument("--flows", metavar="SINCE", help="instead of balances, net trades + cash deposits/withdrawals since YYYY-MM-DD")
+    ap.add_argument("--flows", metavar="SINCE", help="instead of balances, net trades + cash deposits/withdrawals in (SINCE, UNTIL]")
+    ap.add_argument("--until", metavar="UNTIL", help="upper bound for --flows (YYYY-MM-DD, inclusive; default: today)")
     args = ap.parse_args()
 
     load_env()
@@ -214,26 +257,30 @@ def main():
 
     if args.flows:
         since = _ymd(args.flows)  # YYYYMMDD; parse() already canonicalizes row dates, _ymd is belt-and-suspenders
-        trades_in = [t for t in data["trades"] if _ymd(t["date"]) >= since]
-        cashtx_in = [r for r in data["deposits_withdrawals"] if _ymd(r["date"]) >= since]
-        transfers_in = [tr for tr in data["transfers"] if _ymd(tr["date"]) >= since]
-        income_in = [r for r in data["income"] if _ymd(r["date"]) >= since]
+        until = _ymd(args.until) if args.until else datetime.date.today().strftime("%Y%m%d")
+        win = f"({args.flows}, {until}]"
+        trades_in = in_window(data["trades"], since, until)
+        cashtx_in = in_window(data["deposits_withdrawals"], since, until)
+        transfers_in = in_window(data["transfers"], since, until)
+        income_in = in_window(data["income"], since, until)
 
         net = defaultdict(float)
         for t in trades_in:
-            net[t["symbol"]] += t["proceeds"]  # sells +cash, buys -cash
-        print(f"IBKR trades since {args.flows} (net proceeds per symbol; + = sold to cash, - = bought):")
+            # netCash is after commission and tax (proceeds is not), and a non-base
+            # row must be converted or it is summed into USD totals at 1:1.
+            net[t["symbol"]] += t["netCash"] * (data["fx"].get(t["currency"]) or 1.0)
+        print(f"IBKR trades in {win} (net cash per symbol, base ccy; + = sold to cash, - = bought):")
         for sym in sorted(net, key=lambda s: net[s]):
             if abs(net[sym]) >= 0.5:
                 print(f"  {sym:8} {net[sym]:>+12,.2f}  ({'sold→USD Cash' if net[sym] > 0 else 'USD Cash→bought'})")
 
-        print(f"\nIBKR cash deposits/withdrawals since {args.flows}:")
+        print(f"\nIBKR cash deposits/withdrawals in {win}:")
         for r in cashtx_in:
             print(f"  {r['amount']:>+12,.2f} {r['currency']:4} [{_ymd(r['date'])}] {r['type']}  {r.get('desc') or ''}")
 
         # Transfers (ACATS / position & cash moves between accounts). direction IN/OUT;
         # positionAmount is the asset value moved, cashAmount the cash leg (if any).
-        print(f"\nIBKR transfers since {args.flows}:")
+        print(f"\nIBKR transfers in {win}:")
         for tr in transfers_in:
             sign = "+" if (tr.get("direction") or "").upper() == "IN" else "-"
             amt = tr["cashAmount"] if abs(tr.get("cashAmount") or 0) >= 0.005 else tr["amount"]
@@ -242,7 +289,7 @@ def main():
 
         # Cash-affecting income: interest credited + dividends paid to cash (not reinvested),
         # net of withholding tax. Performance, not a flow — but it moves the cash balance.
-        print(f"\nIBKR cash income since {args.flows} (net of tax):")
+        print(f"\nIBKR cash income in {win} (net of tax):")
         income_by_type = defaultdict(float)
         for r in income_in:
             income_by_type[r["type"]] += r["amount"]
@@ -250,7 +297,7 @@ def main():
             if abs(income_by_type[typ]) >= 0.005:
                 print(f"  {income_by_type[typ]:>+12,.2f}  {typ}")
 
-        manifest = flows_manifest(data, args.flows)
+        manifest = flows_manifest(data, args.flows, until)
         print(f"\nmanifest: {json.dumps(manifest)}")
         return
 

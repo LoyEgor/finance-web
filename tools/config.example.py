@@ -34,7 +34,8 @@ VENUES = {
     "ExchangeB": {"method": "api",        "tool": "fetch_binance",
                   "screenshot_sleeves": ["copytrading"],   # copier copytrading has no API
                   "required_channels": ["capital-deposit", "capital-withdraw",
-                                        "fiat-deposit", "fiat-withdraw", "p2p-sell", "convert"]},
+                                        "fiat-deposit", "fiat-withdraw", "p2p-sell", "p2p-buy",
+                                        "convert"]},
     "ExchangeC": {"method": "screenshot"},
     "ExchangeD": {"method": "screenshot"},
     "ExchangeE": {"method": "screenshot", "note": "currently ~zero; may return"},
@@ -93,8 +94,10 @@ ASSET_MAP = {
 STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "RWUSD"}
 
 # ── BENCHMARKS ──────────────────────────────────────────────────────────────
-# Symbols to fetch each snapshot (Yahoo tickers). Swap freely (e.g. an AI-ETF).
-# The app keys these by snapshot date; fetch_benchmarks fills them.
+# Symbols to fetch each snapshot (Yahoo tickers). NOT freely swappable: the app
+# reads benchmarksData['VT'] and ['VOO'] by literal key and renders exactly those
+# two perf rows, so dropping either leaves its row blank — changing the set needs
+# an app change too. The app keys these by snapshot date; fetch_benchmarks fills them.
 BENCHMARKS = ["VOO", "VT"]
 
 # ── RECURRING PATTERNS (HINTS ONLY) ─────────────────────────────────────────
@@ -118,4 +121,6 @@ TOL = {
     "usd_band_floor_usd": 50.0,         # floor so a near-empty cash category still has a non-zero band
     "price_anchor_pp": 3.0,             # cross-venue price-move divergence (percentage points) before flagging a hidden flow
     "match_usd": 50.0,                  # cross-venue vanished->deposit amount-match slack
+    "ibkr_nav_abs": 25.0,               # broker snapshot-sum vs Flex NAV: absolute floor of the tolerance
+    "ibkr_nav_pct": 0.001,              # ...and its %-of-NAV part; tolerance = max(abs, pct × NAV)
 }

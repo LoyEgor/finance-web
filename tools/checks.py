@@ -45,11 +45,12 @@ def _venue_by_role(config, role):
 
 
 def _is_stable_asset(name, cat, config):
-    """A usd-category line or a known stablecoin code embedded in the display name."""
+    """A usd-category line, or a line whose resolved asset CODE is a known stablecoin.
+    Matched on the code, never as a substring of the display name — a fund named
+    "DAILY DIP FUND" contains DAI but carries a full market move."""
     if cat == reconcile.STABLE_CAT:
         return True
-    up = (name or "").upper()
-    return any(s in up for s in config.STABLES)
+    return _asset_code(name, config) in config.STABLES
 
 
 # ── coverage_gate ────────────────────────────────────────────────────────────
@@ -96,7 +97,18 @@ def coverage_gate(manifests, period, config):
                     {"venue": venue, "channel": ch, "manifest": m}))
                 continue
             span = _window_span(m.get("window"))
-            if span and prev and curr:
+            if not span or span == (None, None):
+                # A required FLOW channel always carries a period window. Missing or
+                # unparsable means we cannot tell what it covered — asserting coverage
+                # from `rows` alone is exactly the fabrication this gate exists to catch.
+                out.append(_finding(
+                    "coverage_gate", "critical",
+                    f"{venue}/{ch}: window {m.get('window')!r} missing or unparsable — "
+                    f"cannot prove the channel spans the period ({prev or '-'}, {curr}].",
+                    {"venue": venue, "channel": ch, "window": m.get("window"),
+                     "period": [prev, curr]}))
+                continue
+            if prev and curr:
                 w_from, w_to = span
                 if (w_from and w_from > prev) or (w_to and w_to < curr):
                     out.append(_finding(
@@ -172,6 +184,10 @@ def clock_guard(target_filename, meta_date, today, prior_snapshot_dates, config)
     """
     out = []
     cur_month = today[:7]
+    # The compare base belongs to the SNAPSHOT being written, not to the wall clock:
+    # with --as-of (or a run in the first days of a month) the two disagree, and the
+    # guard would validate against a different base than the pipeline reconciles.
+    base_month = (meta_date or today)[:7]
     fname_month = target_filename.replace(".json", "")[:7]
 
     if fname_month > cur_month:
@@ -197,7 +213,7 @@ def clock_guard(target_filename, meta_date, today, prior_snapshot_dates, config)
                 f"meta.date {meta_date} is not in the target file's month {fname_month}.",
                 {"meta_date": meta_date, "file_month": fname_month}))
 
-    priors = sorted(d for d in prior_snapshot_dates if d and d[:7] < cur_month)
+    priors = sorted(d for d in prior_snapshot_dates if d and d[:7] < base_month)
     if not priors:
         out.append(_finding(
             "clock_guard", "warn",
@@ -232,6 +248,10 @@ def recurring_guard(transfers, config):
         salary_usd_approx => flag (raise/cut/partial month or a mis-entry).
 
     Venues are resolved by config role markers, not by literal name.
+
+    Takes the RAW (pre-simplify) transfer set: simplify_transfers nets every withdraw
+    on one asset key into a single leg, so after it the duplicate count is at most 1
+    and the rent gate can never fire.
     """
     out = []
     rec = config.RECURRING
@@ -279,9 +299,11 @@ def price_anchor(prev_items, cur_items, transfers, price_fn, config):
     same % market move applies everywhere. We derive the real period return r from
     price_fn (injected: Binance klines / Yahoo) and check each venue's residual:
 
-        excess = curr - prev*(1+r) - recordedNetFlow(this venue's asset)
+        excess = curr - prev*(1+r) - flow*(1+r/2)      (this venue's asset)
 
-    An excess beyond config.TOL['price_anchor_pp'] (% of prev) implies a hidden
+    A flow lands at an unknown point in the period, so it is credited HALF the period
+    return: charging it zero (the old formula) turned every mid-period deposit into a
+    fabricated residual. An excess beyond config.TOL['price_anchor_pp'] (% of prev) implies a hidden
     flow (a deposit/top-up or an OCR misread) -> flag. FLAG-ONLY: never auto-edit a
     screenshot value (a misread and a real top-up are indistinguishable from value).
 
@@ -329,7 +351,7 @@ def price_anchor(prev_items, cur_items, transfers, price_fn, config):
             flow = adj.get(k, 0.0)
             if max(abs(pv), abs(cv)) < dust:
                 continue
-            excess = cv - pv * (1 + r) - flow
+            excess = cv - pv * (1 + r) - flow * (1 + r / 2)
             base = abs(pv) if abs(pv) > dust else abs(cv)
             excess_pp = (excess / base * 100) if base else 0.0
             if abs(excess) >= match_floor and abs(excess_pp) > pp:
@@ -349,12 +371,12 @@ def _asset_code(name, config):
     for code, (_cat, disp) in config.ASSET_MAP.items():
         if disp == name:
             return code
-    up = (name or "").upper()
+    # Whole-token match only, then the first alnum token ("BTC (Bitcoin)" -> "BTC").
+    # A substring match here would resolve "DAILY DIP FUND" to the stablecoin DAI.
+    tok = "".join(c if c.isalnum() else " " for c in (name or "").upper()).split()
     for s in config.STABLES:
-        if s in up:
+        if s in tok:
             return s
-    # Fall back to the first alnum token (e.g. "BTC (Bitcoin)" -> "BTC").
-    tok = "".join(c if c.isalnum() else " " for c in up).split()
     return tok[0] if tok else None
 
 
@@ -388,7 +410,9 @@ def vanished_venue(prev_items, cur_items, transfers, deposits, config):
         if pv <= dust or cv > dust:
             continue
         flow = adj.get(k, 0.0)
-        if abs(flow) > dust:  # an exit IS recorded; leftover is market move / stable residual, not vanished
+        # Only a SUBSTANTIAL OUTBOUND flow books the exit. A deposit — or a dust row —
+        # on the same key explains nothing about where the value went.
+        if flow < 0 and abs(flow) >= max(slack, 0.05 * pv):
             continue
         candidates = [d for d in (deposits or [])
                       if abs(float(d.get("amount", 0.0)) - pv) <= max(slack, 0.05 * pv)]
@@ -432,7 +456,7 @@ def stable_invariant(prev_items, cur_items, transfers, config):
 
 
 # ── usd_band ─────────────────────────────────────────────────────────────────
-def usd_band(category_residuals, config, stable_deltas=None, usd_total=0.0):
+def usd_band(category_residuals, config, stable_deltas=None, usd_total=0.0, prev_usd_total=0.0):
     """Anti-fudge gate on the usd category. A usd-category residual beyond the
     per-period band max(floor, pct × usd-category total) -> flag the signed gap +
     the largest-delta stable asset (so the user sees where to look). The band scales
@@ -441,11 +465,13 @@ def usd_band(category_residuals, config, stable_deltas=None, usd_total=0.0):
 
     category_residuals: {cat_id: residual_float} (from reconcile: Δ - cat_netflow)
     stable_deltas:      optional [(meta, delta), ...] for usd-category assets.
-    usd_total:          the CURRENT snapshot's usd-category total (sizes the band).
+    usd_total / prev_usd_total: the period's two usd-category totals; the band is
+                        sized on the larger, since the drift accrued on the cash
+                        held during the period, not on what is left at the end.
     """
     out = []
     # SAME formula as the reconcile CLI band so the two layers never diverge.
-    band = reconcile.usd_resid_band(usd_total)
+    band = reconcile.usd_resid_band(prev_usd_total, usd_total)
     resid = category_residuals.get(reconcile.STABLE_CAT, 0.0)
     if abs(resid) > band:
         culprit = None
@@ -469,9 +495,10 @@ def usd_band(category_residuals, config, stable_deltas=None, usd_total=0.0):
 
 
 # ── ibkr_nav ─────────────────────────────────────────────────────────────────
-def ibkr_nav(snapshot_items, flex_nav, config, tol_abs=25.0, tol_pct=0.001):
-    """sum(broker-venue snapshot rows) vs Flex NAV within max(tol_abs, tol_pct*NAV)
-    -> flag. Skipped (info) if NAV unavailable or no broker role configured.
+def ibkr_nav(snapshot_items, flex_nav, config):
+    """sum(broker-venue snapshot rows) vs Flex NAV within
+    max(TOL['ibkr_nav_abs'], TOL['ibkr_nav_pct']*NAV) -> flag. Skipped (info) if NAV
+    unavailable or no broker role configured.
     FLAG-only: never auto-overwrite the snapshot from Flex (same-day Flex can be
     the stale side). The broker venue is resolved by config role, not by name.
 
@@ -483,7 +510,8 @@ def ibkr_nav(snapshot_items, flex_nav, config, tol_abs=25.0, tol_pct=0.001):
         return [_finding("ibkr_nav", "info",
                          f"{broker or 'broker'} Flex NAV unavailable — NAV identity skipped.", {})]
     broker_sum = sum(float(it["val"]) for it in snapshot_items if it.get("source") == broker)
-    tol = max(tol_abs, tol_pct * abs(flex_nav))
+    tol = max(config.TOL.get("ibkr_nav_abs", 25.0),
+              config.TOL.get("ibkr_nav_pct", 0.001) * abs(flex_nav))
     gap = broker_sum - flex_nav
     if abs(gap) > tol:
         return [_finding(
@@ -504,8 +532,9 @@ def run_all(ctx, config):
 
     ctx keys:
       manifests, period, target_filename, meta_date, today, prior_snapshot_dates,
-      transfers, prev_items, cur_items, price_fn, deposits, category_residuals,
-      stable_deltas, usd_total, snapshot_items, flex_nav
+      transfers, raw_transfers, prev_items, cur_items, price_fn, deposits,
+      category_residuals, stable_deltas, usd_total, prev_usd_total, snapshot_items,
+      flex_nav
     """
     findings = []
     if "manifests" in ctx and "period" in ctx:
@@ -513,8 +542,10 @@ def run_all(ctx, config):
     if "target_filename" in ctx and "today" in ctx:
         findings += clock_guard(ctx["target_filename"], ctx.get("meta_date"), ctx["today"],
                                 ctx.get("prior_snapshot_dates", []), config)
-    if "transfers" in ctx:
-        findings += recurring_guard(ctx["transfers"], config)
+    # recurring_guard needs the pre-simplify rows; the simplified set has already
+    # collapsed same-key withdraws, hiding a duplicate payment.
+    if "raw_transfers" in ctx or "transfers" in ctx:
+        findings += recurring_guard(ctx.get("raw_transfers") or ctx.get("transfers"), config)
     if {"prev_items", "cur_items", "transfers", "price_fn"} <= ctx.keys():
         findings += price_anchor(ctx["prev_items"], ctx["cur_items"], ctx["transfers"], ctx["price_fn"], config)
     if {"prev_items", "cur_items", "transfers"} <= ctx.keys():
@@ -523,33 +554,72 @@ def run_all(ctx, config):
         findings += stable_invariant(ctx["prev_items"], ctx["cur_items"], ctx["transfers"], config)
     if "category_residuals" in ctx:
         findings += usd_band(ctx["category_residuals"], config, ctx.get("stable_deltas"),
-                             ctx.get("usd_total", 0.0))
+                             ctx.get("usd_total", 0.0), ctx.get("prev_usd_total", 0.0))
     if "snapshot_items" in ctx:
         findings += ibkr_nav(ctx["snapshot_items"], ctx.get("flex_nav"), config)
     return findings
 
 
 def _self_test():
-    """Run with `python3 tools/checks.py`. Regression guard for the salary
-    amount-deviation flag: a deposit at ~salary_usd_approx must NOT flag; one far
-    from it (here doubled) MUST flag. Also asserts the usd_band scales with cash."""
-    import config
+    """Run with `python3 tools/checks.py`. Runs on FIXTURE constants, never on the
+    live config — a fresh clone (`cp config.example.py config.py`) has placeholder
+    zeros that no salary deviation can be computed from. Guards:
+      - salary: on-target must NOT flag, far-from-expected MUST flag;
+      - usd_band scales with the cash held, and sizes on the LARGER of the two totals;
+      - _is_stable_asset matches the asset CODE, not a substring of the display name;
+      - vanished_venue is silenced only by a substantial OUTBOUND flow.
+    """
+    import types
+
+    cfg = types.SimpleNamespace(
+        VENUES={"Broker": {"method": "api", "role": "broker", "required_channels": []},
+                "Home": {"method": "manual", "role": "cash"}},
+        RECURRING={"salary_usd_approx": 3000, "rent_amounts": [500], "rent_per_month": 1},
+        ASSET_MAP={},
+        STABLES={"USDT", "USDC", "DAI"},
+        TOL={"dust_usd": 1.0, "stable_resid_usd": 2.0, "usd_band_pct": 0.015,
+             "usd_band_floor_usd": 50.0, "price_anchor_pp": 3.0, "match_usd": 50.0},
+    )
 
     def _fund(amount):
-        return {"type": "deposit", "source": _venue_by_role(config, "broker"),
-                "category": reconcile.STABLE_CAT, "amount": amount, "name": "USDT"}
+        return {"type": "deposit", "source": "Broker", "category": reconcile.STABLE_CAT,
+                "amount": amount, "name": "USDT"}
 
     def _salary_flagged(amount):
         return any(f["check"] == "recurring_guard" and "expected salary" in f["message"]
-                   for f in recurring_guard([_fund(amount)], config))
+                   for f in recurring_guard([_fund(amount)], cfg))
 
-    salary = config.RECURRING["salary_usd_approx"]
+    salary = cfg.RECURRING["salary_usd_approx"]
     assert not _salary_flagged(salary), "on-target salary -> must NOT flag"
     assert _salary_flagged(salary * 2), "salary far from expected -> MUST flag"
 
-    near_empty = usd_band({reconcile.STABLE_CAT: 100.0}, config, usd_total=0.0)
-    big_cash = usd_band({reconcile.STABLE_CAT: 100.0}, config, usd_total=50_000.0)
+    assert not _is_stable_asset("DAILY DIP FUND", "stocks", cfg), "DAI is not a substring match"
+    assert _is_stable_asset("USDT", "crypto", cfg), "a bare stablecoin code is stable"
+    assert _is_stable_asset("Anything", reconcile.STABLE_CAT, cfg), "usd category is always stable"
+
+    prev_items = {reconcile.asset_key("crypto", "X", "FOO"):
+                  {"cat": "crypto", "source": "X", "name": "FOO", "val": 3800.0}}
+
+    def _vanished(rows):
+        return vanished_venue(prev_items, {}, rows, [], cfg)
+
+    def _row(typ, amount):
+        return {"type": typ, "category": "crypto", "source": "X", "name": "FOO", "amount": amount}
+
+    assert _vanished([]), "vanished with nothing recorded -> MUST flag"
+    assert _vanished([_row("deposit", 5.0)]), "an inbound dust row must not explain a vanished venue"
+    assert not _vanished([_row("withdraw", 3800.0)]), "a full recorded exit -> no flag"
+
+    # usd_band's formula lives in reconcile and reads reconcile's own config module.
+    real_cfg, reconcile.config = reconcile.config, cfg
+    try:
+        near_empty = usd_band({reconcile.STABLE_CAT: 100.0}, cfg, usd_total=0.0)
+        big_cash = usd_band({reconcile.STABLE_CAT: 100.0}, cfg, usd_total=50_000.0)
+        drained = usd_band({reconcile.STABLE_CAT: 100.0}, cfg, usd_total=0.0, prev_usd_total=50_000.0)
+    finally:
+        reconcile.config = real_cfg
     assert near_empty[0]["detail"]["band"] < big_cash[0]["detail"]["band"], "band must scale with usd total"
+    assert drained[0]["detail"]["band"] == big_cash[0]["detail"]["band"], "band sizes on the larger total"
     print("checks.py self-test OK")
 
 

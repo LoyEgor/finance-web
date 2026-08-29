@@ -5,19 +5,25 @@ meaningful set, matching the user's historical granularity.
 
 Only the NET flow of each asset between snapshots matters (it's what isolates an
 asset's clean performance). Intermediate hops and round-trips don't. So this:
-  - nets external deposits/withdrawals per asset,
+  - nets external deposits and withdrawals SEPARATELY per asset (same-signed rows
+    only), so an asset's GROSS deposit total survives — the app's yield divides by
+    startBalance + GROSS deposits, so collapsing a deposit against a withdraw on
+    the same asset would move the published number,
   - collapses multi-hop chains A->B->C into A->C (an asset that nets to ~0 drops out),
   - cancels round-trips (USDT->BTC->USDT),
-  - reduces internal moves to one leg per asset against a single canonical cash hub.
+  - reduces internal moves to one leg per asset against a cash hub — two-level, so
+    no synthetic leg ever crosses a category boundary.
 
 Internal moves are NOT re-paired asset-to-asset: matching arbitrary net sources to
 net sinks invents semantically-false venue pairs (e.g. AAPL->BTC, MSFT->BTC that
-never happened). Instead every asset's net internal flow is expressed as a single
-move against one canonical cash hub — the economically real picture (you sell an
-asset into cash and buy another out of cash). With one move per asset key and the
-hub absorbing the remainder, per-asset AND per-category net flows are preserved
-EXACTLY (the hub leg is omitted; its net falls out of the others summing to zero),
-so the app's clean per-asset / per-category performance is unchanged.
+never happened). Instead each category pairs its own movers against its LOCAL hub
+(its largest |net| key) — every level-1 leg stays inside the category — and only
+the category's RESIDUAL net crosses a boundary, routed between that category's hub
+and the single GLOBAL cash hub. Routing every move through one global hub instead
+(the earlier design) inflated that hub category's GROSS flows with moves that never
+touched it, diluting its yield. With one move per asset key and each hub absorbing
+its own remainder, per-asset AND per-category net flows are preserved EXACTLY, so
+the app's clean per-asset / per-category performance is unchanged.
 
 Net flows are preserved to the cent: nothing carrying real net is dropped (the old
 dust dead-band silently lost net in the (dust/2, dust) gap). Only sub-cent rounding
@@ -36,50 +42,69 @@ EPS = 0.005
 
 
 def simplify(transfers):
-    ext = defaultdict(float)       # external net per key (+deposit / -withdraw)
+    ext_in = defaultdict(float)    # gross external deposits per key
+    ext_out = defaultdict(float)   # gross external withdrawals per key
     internal = defaultdict(float)  # internal move net per key (+in / -out)
 
     for t in transfers:
         a = float(t["amount"])
         if t["type"] == "deposit":
-            ext[(t["category"], t["source"], t["name"])] += a
+            ext_in[(t["category"], t["source"], t["name"])] += a
         elif t["type"] == "withdraw":
-            ext[(t["category"], t["source"], t["name"])] -= a
+            ext_out[(t["category"], t["source"], t["name"])] += a
         elif t["type"] == "move":
             internal[(t["from_category"], t["from_source"], t["from_name"])] -= a
             internal[(t["to_category"], t["to_source"], t["to_name"])] += a
 
     out = []
-    for k, v in ext.items():
-        if abs(v) < EPS:
-            continue
+    # A key with real flow on BOTH sides emits BOTH legs: netting them would shrink
+    # the gross deposit total the app's yield denominator is built from.
+    for k in list(ext_in) + [k for k in ext_out if k not in ext_in]:
         cat, src, nm = k
-        out.append({"type": "deposit" if v > 0 else "withdraw", "amount": round(abs(v), 2),
-                    "category": cat, "source": src, "name": nm})
+        for typ, v in (("deposit", ext_in.get(k, 0.0)), ("withdraw", ext_out.get(k, 0.0))):
+            if v >= EPS:
+                out.append({"type": typ, "amount": round(v, 2),
+                            "category": cat, "source": src, "name": nm})
 
-    # Canonical cash hub: the key with the largest |net| inside the usd category
-    # (the real cash account everything routes through); fall back to the overall
-    # largest |net| if there is no usd flow. The hub leg is never emitted directly —
-    # connecting every other key to it gives the hub exactly its own net, because
-    # all internal nets sum to zero.
     moving = {k: v for k, v in internal.items() if abs(v) >= EPS}
     if moving:
-        usd_keys = {k: v for k, v in moving.items() if k[0] == "usd"}
-        pool = usd_keys or moving
-        hub = max(pool, key=lambda k: abs(pool[k]))
-
         def emit(fk, tk, amt):
             out.append({"type": "move", "amount": round(amt, 2),
                         "from_category": fk[0], "from_source": fk[1], "from_name": fk[2],
                         "to_category": tk[0], "to_source": tk[1], "to_name": tk[2]})
 
+        by_cat = defaultdict(dict)
         for k, v in moving.items():
-            if k == hub:
+            by_cat[k[0]][k] = v
+        hubs = {c: max(ks, key=lambda k: abs(ks[k])) for c, ks in by_cat.items()}
+
+        # Level 1 — inside a category, every other mover pairs against that
+        # category's own hub, so a same-category move can never plant a leg in
+        # another category (which would inflate that category's gross flows).
+        for c, ks in by_cat.items():
+            for k, v in ks.items():
+                if k == hubs[c]:
+                    continue
+                if v < 0:      # net source -> drains into its category hub
+                    emit(k, hubs[c], -v)
+                else:          # net sink <- funded from its category hub
+                    emit(hubs[c], k, v)
+
+        # Level 2 — only a category's RESIDUAL net crosses a boundary, routed
+        # between its hub and the global cash hub (the largest |net| usd key, else
+        # the largest category hub). Each hub then lands on exactly its own net,
+        # because all internal nets — and so all category residuals — sum to zero.
+        global_hub = hubs.get("usd") or max(hubs.values(), key=lambda k: abs(moving[k]))
+        for c, h in hubs.items():
+            if h == global_hub:
                 continue
-            if v < 0:          # net source -> drains into the hub
-                emit(k, hub, -v)
-            else:              # net sink <- funded from the hub
-                emit(hub, k, v)
+            resid = sum(by_cat[c].values())
+            if abs(resid) < EPS:
+                continue       # category rebalanced internally — nothing left it
+            if resid < 0:
+                emit(h, global_hub, -resid)
+            else:
+                emit(global_hub, h, resid)
     return out
 
 
@@ -169,7 +194,11 @@ def main():
     simple = simplify(raw)
     result = {"meta": meta, "transfers": simple}
 
-    if args.out:
+    # Reconcile BEFORE writing: a corrupt file on disk outlives the traceback, and
+    # the operator remembers the "wrote ..." line.
+    ok, lines = reconcile(raw, simple)
+
+    if ok and args.out:
         json.dump(result, open(args.out, "w"), ensure_ascii=False, indent=2)
         print(f"wrote {args.out}")
     print(f"raw: {len(raw)} transfers  ->  simplified: {len(simple)} transfers\n")
@@ -179,12 +208,11 @@ def main():
         else:
             print(f"  {t['type']:8} {t['amount']:>10,.2f}  {t['category']}/{t['source']}/{t['name']}")
 
-    ok, lines = reconcile(raw, simple)
     print("\nreconciliation (net flow before vs after simplify):")
     for ln in lines:
         print(ln)
     if not ok:
-        raise SystemExit("RECONCILIATION FAILED: net flows changed")
+        raise SystemExit("RECONCILIATION FAILED: net flows changed — nothing written")
 
 
 if __name__ == "__main__":

@@ -40,7 +40,8 @@ DAY_MS = 86400000
 CAPITAL_WINDOW_MS = 90 * DAY_MS
 # c2c/p2p order history accepts at most a 30-day [startTimestamp,endTimestamp] span.
 P2P_WINDOW_MS = 30 * DAY_MS
-DEPOSIT_OK = {1}            # capital deposit status int: 1 = success (0 pending, 6 credited-no-withdraw, 7/8 problems)
+DEPOSIT_OK = {1, 6}         # capital deposit status int: 1 = success, 6 = credited-but-cannot-withdraw
+                            # (6 is already IN the balance, so excluding it makes the funds look like market gain)
 WITHDRAW_OK = {6}           # capital withdraw status int: 6 = completed (0..5 = in-flight/cancelled/failed)
 FIAT_OK = {"Successful", "Finished"}  # fiat order status strings considered final/credited
 
@@ -70,6 +71,19 @@ def public_get(path, params=None):
     url = f"{SPOT}{path}" + (("?" + urllib.parse.urlencode(params)) if params else "")
     with urllib.request.urlopen(url, timeout=60) as r:
         return json.loads(r.read())
+
+
+def biz_error(resp):
+    """Binance answers HTTP 200 with {"success": false} / a non-zero `code` for
+    business errors on the fiat, c2c and convert rails. Returns an error string, or
+    None when the body is a real result: reading such a body as an empty page turns
+    a failed pull into "no flows in this window", which the coverage gate then passes.
+    """
+    if not isinstance(resp, dict):
+        return None
+    if resp.get("success") is False or resp.get("code") not in ("000000", 0, None):
+        return f"business error code={resp.get('code')}: {resp.get('message') or resp.get('msg') or ''}".strip()
+    return None
 
 
 def signed(path, key, secret, params=None, method="GET", host=SPOT):
@@ -159,7 +173,9 @@ def collect(key, secret):
     def do_funding():
         n = 0
         for r in signed("/sapi/v1/asset/get-funding-asset", key, secret, method="POST"):
-            a = float(r["free"]) + float(r["locked"]) + float(r.get("freeze", 0))
+            # `withdrawing` is still owned at snapshot time — the withdraw has not settled.
+            a = (float(r["free"]) + float(r["locked"]) + float(r.get("freeze", 0))
+                 + float(r.get("withdrawing", 0)))
             if a > 0:
                 qty[r["asset"]] += a
                 wallets[r["asset"]]["funding"] += a
@@ -282,6 +298,10 @@ def flows(key, secret, start_ms, end_ms):
                 except (BinanceError, urllib.error.URLError) as e:
                     err(name, e)
                     break
+                bad = biz_error(resp)
+                if bad:
+                    err(name, bad)
+                    break
                 data = resp.get("data") or [] if isinstance(resp, dict) else []
                 for o in data:
                     row = {"fiatCurrency": o.get("fiatCurrency"), "amount": float(o.get("amount", 0)),
@@ -299,52 +319,75 @@ def flows(key, secret, start_ms, end_ms):
                 page += 1
         ok(name, n)
 
-    # --- P2P (c2c) SELL = crypto out / fiat in the user's pocket -> treat as a withdrawal ---
+    # --- P2P (c2c): SELL = crypto out / fiat into the user's pocket -> a withdrawal;
+    #     BUY = fiat paid / crypto credited -> real inbound capital, its own channel ---
     # IMPORTANT: params are startTimestamp/endTimestamp + page/rows. Using startTime/endTime
     # returns nothing silently. Window <=30d. resp: {"code","data":[{orderStatus,asset,amount,
     # totalPrice,fiat,unitPrice,createTime,...}],"total"}.
-    mark("p2p-sell", [start_ms, end_ms])
-    n = 0
-    for w_from, w_to in windows(start_ms, end_ms, P2P_WINDOW_MS):
-        page = 1
-        while True:
-            try:
-                resp = signed("/sapi/v1/c2c/orderMatch/listUserOrderHistory", key, secret,
-                              {"tradeType": "SELL", "startTimestamp": w_from, "endTimestamp": w_to,
-                               "page": page, "rows": 100})
-            except (BinanceError, urllib.error.URLError) as e:
-                err("p2p-sell", e)
-                break
-            data = resp.get("data") or [] if isinstance(resp, dict) else []
-            for o in data:
-                row = {"coin": o.get("asset"), "amount": float(o.get("amount", 0)),
-                       "fiatCurrency": o.get("fiat"), "fiatAmount": float(o.get("totalPrice", 0)),
-                       "unitPrice": float(o.get("unitPrice", 0)), "time": o.get("createTime"),
-                       "orderNo": o.get("orderNumber"), "status": o.get("orderStatus"), "source": "p2p"}
-                if o.get("orderStatus") == "COMPLETED":
-                    out["withdrawals"].append(row)
-                    n += 1
-                else:
-                    out["dropped"].append({**row, "channel": "p2p-sell", "reason": "non-final-status"})
-            if len(data) < 100:
-                break
-            page += 1
-    ok("p2p-sell", n)
+    for trade_type, bucket, name in (("SELL", "withdrawals", "p2p-sell"),
+                                     ("BUY", "deposits", "p2p-buy")):
+        mark(name, [start_ms, end_ms])
+        n = 0
+        for w_from, w_to in windows(start_ms, end_ms, P2P_WINDOW_MS):
+            page = 1
+            while True:
+                try:
+                    resp = signed("/sapi/v1/c2c/orderMatch/listUserOrderHistory", key, secret,
+                                  {"tradeType": trade_type, "startTimestamp": w_from, "endTimestamp": w_to,
+                                   "page": page, "rows": 100})
+                except (BinanceError, urllib.error.URLError) as e:
+                    err(name, e)
+                    break
+                bad = biz_error(resp)
+                if bad:
+                    err(name, bad)
+                    break
+                data = resp.get("data") or [] if isinstance(resp, dict) else []
+                for o in data:
+                    row = {"coin": o.get("asset"), "amount": float(o.get("amount", 0)),
+                           "fiatCurrency": o.get("fiat"), "fiatAmount": float(o.get("totalPrice", 0)),
+                           "unitPrice": float(o.get("unitPrice", 0)), "time": o.get("createTime"),
+                           "orderNo": o.get("orderNumber"), "status": o.get("orderStatus"), "source": "p2p"}
+                    if o.get("orderStatus") == "COMPLETED":
+                        out[bucket].append(row)
+                        n += 1
+                    else:
+                        out["dropped"].append({**row, "channel": name, "reason": "non-final-status"})
+                if len(data) < 100:
+                    break
+                page += 1
+        ok(name, n)
 
     # --- convert history (capped at 30-day windows) ---
     mark("convert", [start_ms, end_ms])
     n = 0
     for w_from, w_to in windows(start_ms, end_ms, P2P_WINDOW_MS):
-        try:
-            cv = signed("/sapi/v1/convert/tradeFlow", key, secret,
-                        {"startTime": w_from, "endTime": w_to, "limit": 1000})
-        except (BinanceError, urllib.error.URLError) as e:
-            err("convert", e)
-            continue
-        for c in (cv.get("list") or []):
-            out["converts"].append({"from": c["fromAsset"], "fromAmt": float(c["fromAmount"]),
-                                    "to": c["toAsset"], "toAmt": float(c["toAmount"]), "time": c.get("createTime")})
-            n += 1
+        # `moreData` means the window holds more than this page returned. Walk the
+        # upper bound down past the oldest row already taken; ignoring the flag
+        # truncates silently while the manifest still reports the window as covered.
+        w_end = w_to
+        while True:
+            try:
+                cv = signed("/sapi/v1/convert/tradeFlow", key, secret,
+                            {"startTime": w_from, "endTime": w_end, "limit": 1000})
+            except (BinanceError, urllib.error.URLError) as e:
+                err("convert", e)
+                break
+            bad = biz_error(cv)
+            if bad:
+                err("convert", bad)
+                break
+            rows = cv.get("list") or []
+            for c in rows:
+                out["converts"].append({"from": c["fromAsset"], "fromAmt": float(c["fromAmount"]),
+                                        "to": c["toAsset"], "toAmt": float(c["toAmount"]), "time": c.get("createTime")})
+                n += 1
+            if not rows or not cv.get("moreData"):
+                break
+            oldest = min(int(r.get("createTime") or 0) for r in rows)
+            if oldest <= w_from:
+                break
+            w_end = oldest - 1
     ok("convert", n)
 
     return out

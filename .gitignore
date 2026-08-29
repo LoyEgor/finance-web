@@ -106,8 +106,10 @@ portfolio.md
 img/
 
 # Real config — holds venues, amounts, and the private repo path. Never publish.
+# The glob also covers experiment copies (config_local.py, config.bak.py);
 # tools/config.example.py is the tracked placeholder template.
-tools/config.py
+tools/config*.py
+!tools/config.example.py
 
 # Python bytecode
 __pycache__/

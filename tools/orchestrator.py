@@ -164,7 +164,10 @@ def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None):
     coin_price_usd(coin_code) -> USD price per unit, or None. Pass
     fetch_binance.price_usd bound to a ticker map (or any price_fn). When a non-stable
     coin can't be priced, the row is kept at the raw coin amount and tagged unpriced —
-    a no-match is then a coverage gap to surface, not a silent drop."""
+    a no-match is then a coverage gap to surface, not a silent drop.
+
+    ibkr_flows carries its statement's `fx` map so a non-base-currency row is converted
+    the same way; without it a 2,000 EUR deposit is matched as 2,000 USD."""
     pool = []
     for d in (binance_flows or {}).get("deposits", []):
         amt = float(d.get("amount", 0.0))
@@ -178,9 +181,16 @@ def deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd=None):
                 unpriced = True
         pool.append({"amount": amt, "coin": coin, "venue": "Binance",
                      "time": d.get("time"), "source": d.get("source"), "unpriced": unpriced})
+    fx = (ibkr_flows or {}).get("fx") or {}
     for r in (ibkr_flows or {}).get("deposits", []):
-        pool.append({"amount": float(r.get("amount", 0.0)), "coin": r.get("currency"),
-                     "venue": "IBKR", "time": r.get("date")})
+        ccy = r.get("currency")
+        amt = float(r.get("amount", 0.0))
+        rate = fx.get(ccy)
+        unpriced = rate is None
+        if not unpriced:
+            amt = amt * rate
+        pool.append({"amount": amt, "coin": ccy, "venue": "IBKR",
+                     "time": r.get("date"), "unpriced": unpriced})
     return pool
 
 
@@ -286,6 +296,7 @@ def run_validate(out_path=None):
         "today": today,
         "prior_snapshot_dates": [s["date"] for s in snaps[:-1]],
         "transfers": transfers,
+        "raw_transfers": raw,
         "prev_items": _items_map(prev),
         "cur_items": _items_map(curr),
         "price_fn": price_fn,
@@ -293,6 +304,7 @@ def run_validate(out_path=None):
         "category_residuals": category_residuals(prev, curr, transfers),
         "stable_deltas": stable_deltas(prev, curr),
         "usd_total": curr["by_cat"].get(reconcile.STABLE_CAT, 0.0),
+        "prev_usd_total": prev["by_cat"].get(reconcile.STABLE_CAT, 0.0),
         "snapshot_items": [{"category": m["cat"], "source": m["source"], "name": m["name"], "val": m["val"]}
                            for m in curr["items"].values()],
         "flex_nav": None,  # offline: no Flex pull -> ibkr_nav skips (info)
@@ -321,7 +333,10 @@ def run_live(out_path=None, as_of=None):
     statements only cover through a prior business day, so on any run day the flow
     window ends before today and coverage_gate correctly refuses to reconcile a
     period the statement doesn't span; the fix is to move the period end back to
-    what the statement actually covers, never to loosen the gate.
+    what the statement actually covers, never to loosen the gate. What CANNOT be
+    back-dated (exchange wallet quantities, the live ticker map, carried-forward
+    screenshot rows) stays a live-now value, so a back-dated run emits a warn
+    finding saying exactly that.
     """
     import importlib
 
@@ -330,60 +345,130 @@ def run_live(out_path=None, as_of=None):
     if prev is None:
         raise SystemExit("no previous snapshot in data/ to compare against")
 
-    today = as_of or datetime.date.today().isoformat()
+    real_today = datetime.date.today().isoformat()
+    today = as_of or real_today
     since = prev["date"]
 
+    extra_findings = []
     fetched_items = []
     manifests = {}
     binance_flows = ibkr_flows = None
     flex_nav = None
     coin_price_usd = None  # bound to Binance's live ticker map once it's fetched
+    source_windows = {}    # venue -> the window its SOURCE covers (drives the auto as-of)
+    ibkr_ctx = binance_ctx = None
 
+    # PASS 1 — balances. Dispatch on the configured TOOL, never on the venue's display
+    # name: config.example.py ships placeholder names, so a renamed venue would fall
+    # through every branch and yield a snapshot built entirely from carried values.
     for venue, spec in config.VENUES.items():
         if spec.get("method") != "api":
             continue
-        mod = importlib.import_module(spec["tool"])
+        tool = spec.get("tool")
+        mod = importlib.import_module(tool)
         mod.load_env()
-        if venue == "IBKR":
+        if tool == "fetch_ibkr":
             token, qid = os.environ.get("IBKR_FLEX_TOKEN"), os.environ.get("IBKR_FLEX_QUERY_ID")
             if not token or not qid:
                 raise SystemExit("set IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID in tools/.env")
             data = mod.parse(mod.flex_fetch(token, qid))
             fetched_items += mod.to_snapshot_items(data)
             flex_nav = data.get("nav")
-            ibkr_flows = {"deposits": [r for r in data["deposits_withdrawals"] if r["amount"] > 0]}
-            # REAL manifest from the parsed statement (window = its own reporting period,
-            # rows = actual section lengths) — not a fabricated full-span assertion, so an
-            # empty/missing section or a too-short statement period fails coverage_gate.
-            manifests["IBKR"] = mod.flows_manifest(data, since)
-        elif venue == "Binance":
+            ibkr_ctx = (venue, mod, data)
+            m = data.get("meta") or {}
+            source_windows[venue] = f"{mod._ymd(m.get('fromDate'))}..{mod._ymd(m.get('toDate'))}"
+        elif tool == "fetch_binance":
             key, secret = os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET")
             if not key or not secret:
                 raise SystemExit("set BINANCE_API_KEY / BINANCE_API_SECRET in tools/.env")
             px = {d["symbol"]: float(d["price"]) for d in mod.public_get("/api/v3/ticker/price")}
             coin_price_usd = lambda code, _px=px, _m=mod: _m.price_usd(code, _px)
             qty, wallets, balance_manifest = mod.collect(key, secret)
+            unpriced = []
             for asset, q in qty.items():
                 if asset.startswith("LD") and asset[2:] in qty:
                     continue
                 p = mod.price_usd(asset, px)
                 if p is None:
+                    unpriced.append({"asset": asset, "qty": q})
                     continue
                 val = round(q * p, 2)
                 if val < config.TOL["dust_usd"]:
                     continue
                 cat, name = mod.classify(asset)
-                fetched_items.append({"category": cat, "source": "Binance", "name": name, "val": val})
-            start = int(datetime.datetime.strptime(since, "%Y-%m-%d")
-                        .replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
-            end = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
-            binance_flows = mod.flows(key, secret, start, end)
-            # Flow channels (required, period-windowed) + balance channels (spot/funding/
-            # earn — no window) in one manifest so a silently-failed Earn/Funding pull is
-            # surfaced by coverage_gate instead of silently understating the snapshot.
-            manifests["Binance"] = {**binance_flows.get("manifest", {}), **balance_manifest}
+                fetched_items.append({"category": cat, "source": venue, "name": name, "val": val})
+            if unpriced:
+                # Dropping these silently turns the whole position into a market loss;
+                # they stay out of the total, but the operator is told they exist.
+                extra_findings.append(checks._finding(
+                    "unpriced_asset", "warn",
+                    f"{venue}: {len(unpriced)} held asset(s) have no USD/BTC/ETH pair and are NOT in the "
+                    f"snapshot total — value them manually or their value reads as a market loss: "
+                    + ", ".join(f"{u['asset']} {u['qty']:g}" for u in unpriced),
+                    {"venue": venue, "unpriced": unpriced}))
+            manifests[venue] = dict(balance_manifest)
+            binance_ctx = (venue, mod, key, secret)
+        else:
+            raise SystemExit(f"{venue}: config.VENUES tool {tool!r} has no adapter in the orchestrator")
+
+    if as_of is None:
+        # Broker statements are EOD: on any run day their coverage ends before today,
+        # and dating the snapshot past it can only fail coverage_gate. Auto-date at the
+        # earliest source window end instead — but only a few days back; a very stale
+        # statement must fail the gate loudly, never silently back-date.
+        ends = []
+        for venue, window in source_windows.items():
+            span = checks._window_span(window)
+            if span and span[1]:
+                ends.append(span[1])
+        if ends:
+            earliest = min(ends)
+            e_date = f"{earliest[:4]}-{earliest[4:6]}-{earliest[6:8]}"
+            lag = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(e_date)).days
+            if 0 < lag <= 4:
+                print(f"  statement coverage ends {e_date} — dating the snapshot there (auto as-of; was {today}).")
+                today = e_date
+
+    if today != real_today:
+        extra_findings.append(checks._finding(
+            "as_of", "warn",
+            f"snapshot dated {today} but built on {real_today}: every value that cannot be queried "
+            f"historically (exchange wallet quantities, the ticker price map, carried-forward "
+            f"screenshot/cash rows) is a LIVE-NOW figure labelled with the as-of date. Anything that "
+            f"moved in between lands in the wrong period — replace those rows with as-of values.",
+            {"meta_date": today, "run_date": real_today}))
 
     period = {"prev_date": since, "curr_date": today}
+
+    # PASS 2 — flows, now that the period END is settled. A window running past the
+    # snapshot date pulls the NEXT period's transfers into this one.
+    if ibkr_ctx:
+        venue, mod, data = ibkr_ctx
+        # REAL manifest from the parsed statement (window = its own reporting period,
+        # rows = actual section lengths, queried = the section's presence) — not a
+        # fabricated full-span assertion, so a missing section or a too-short statement
+        # period fails coverage_gate.
+        manifests[venue] = mod.flows_manifest(data, since, today)
+        deps = mod.in_window(data["deposits_withdrawals"], mod._ymd(since), mod._ymd(today))
+        ibkr_flows = {"deposits": [r for r in deps if r["amount"] > 0], "fx": data.get("fx") or {}}
+    if binance_ctx:
+        venue, mod, key, secret = binance_ctx
+        start = int(datetime.datetime.strptime(since, "%Y-%m-%d")
+                    .replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+        end = int(datetime.datetime.strptime(today, "%Y-%m-%d")
+                  .replace(tzinfo=datetime.timezone.utc).timestamp() * 1000) + 86_400_000 - 1
+        binance_flows = mod.flows(key, secret, start, end)
+        # Flow channels (required, period-windowed) + balance channels (spot/funding/
+        # earn — no window) in one manifest so a silently-failed Earn/Funding pull is
+        # surfaced by coverage_gate instead of silently understating the snapshot.
+        manifests[venue] = {**binance_flows.get("manifest", {}), **manifests.get(venue, {})}
+
+    unmanifested = [v for v, s in config.VENUES.items()
+                    if s.get("method") == "api" and not manifests.get(v)]
+    if unmanifested:
+        raise SystemExit(f"api venue(s) produced no coverage manifest: {', '.join(unmanifested)} — "
+                         "nothing was fetched for them, so the snapshot would be carried-forward "
+                         "placeholders that coverage_gate cannot even see.")
 
     # Coverage runs first on the fetched manifests so a missing required channel
     # halts before any screenshot/manual assembly work.
@@ -403,15 +488,32 @@ def run_live(out_path=None, as_of=None):
     api_venues = {v for v, s in config.VENUES.items() if s.get("method") == "api"}
     candidate_items = list(fetched_items)
     for k, meta in prev["items"].items():
-        if meta["source"] not in api_venues:
-            candidate_items.append({"category": meta["cat"], "source": meta["source"],
-                                    "name": meta["name"], "val": meta["val"]})
+        spec = config.VENUES.get(meta["source"], {})
+        # An api venue's no-API sleeve (e.g. copytrading) is never in fetched_items,
+        # so it must be carried forward too or the sleeve silently drops to zero.
+        sleeve = (meta["cat"] == reconcile.COPY_CAT and spec.get("screenshot_sleeves"))
+        if meta["source"] in api_venues and not sleeve:
+            continue
+        candidate_items.append({"category": meta["cat"], "source": meta["source"],
+                                "name": meta["name"], "val": meta["val"]})
 
     curr = _snapshot_from_items(candidate_items, today, curr_month=today[:7])
 
     groups = reconcile.load_groups()
     raw = reconcile.transfers_for_period(groups, prev["date"], curr["date"])
     transfers = simplify_transfers.simplify(raw)
+    # The CLI path aborts here; the live path must not quietly hand a draft to the
+    # skill with a net flow that no longer matches the recorded book.
+    sok, slines = simplify_transfers.reconcile(raw, transfers)
+    if not sok:
+        print("  !! simplify changed net flows:")
+        for ln in slines:
+            print(ln)
+        extra_findings.append(checks._finding(
+            "simplify_reconcile", "critical",
+            "simplify_transfers changed a net flow — the simplified set no longer matches the "
+            "recorded book; do NOT write this snapshot.",
+            {"mismatches": slines}))
 
     deposits = deposits_from_flows(binance_flows, ibkr_flows, coin_price_usd)
     price_fn = make_klines_price_fn(prev["date"], curr["date"])
@@ -421,9 +523,10 @@ def run_live(out_path=None, as_of=None):
         "period": period,
         "target_filename": f"{today[:7]}.json",
         "meta_date": today,
-        "today": today,
+        "today": real_today,  # the WALL CLOCK, so --as-of can't disarm the future-date gate
         "prior_snapshot_dates": [s["date"] for s in snaps],
         "transfers": transfers,
+        "raw_transfers": raw,
         "prev_items": _items_map(prev),
         "cur_items": _items_map(curr),
         "price_fn": price_fn,
@@ -431,10 +534,11 @@ def run_live(out_path=None, as_of=None):
         "category_residuals": category_residuals(prev, curr, transfers),
         "stable_deltas": stable_deltas(prev, curr),
         "usd_total": curr["by_cat"].get(reconcile.STABLE_CAT, 0.0),
+        "prev_usd_total": prev["by_cat"].get(reconcile.STABLE_CAT, 0.0),
         "snapshot_items": candidate_items,
         "flex_nav": flex_nav,
     }
-    findings = checks.run_all(ctx, config)
+    findings = checks.run_all(ctx, config) + extra_findings
 
     print_report(prev, curr, transfers, findings, needed)
     print("\n  NOTE: non-API venues above are carried-forward placeholders; the skill "
