@@ -2597,12 +2597,13 @@ function renderPerformanceChart(stats) {
         }
     });
 
-    // Total portfolio (black, thick)
+    // Total portfolio: thick, in the theme's text colour so it stands apart from the grey benchmarks
+    const totalColor = getComputedStyle(document.documentElement).getPropertyValue('--color-text').trim() || '#1a202c';
     datasets.push({
         label: 'Total',
         data: stats.totalSeries.map(v => v === null ? null : v * 100),
-        borderColor: '#1a202c',
-        backgroundColor: '#1a202c',
+        borderColor: totalColor,
+        backgroundColor: totalColor,
         borderWidth: 3,
         pointRadius: 3,
         tension: 0.25,
@@ -3565,6 +3566,14 @@ function updateMonthArrows() {
 // Pulls the active CSS theme colors and applies them as Chart.js defaults
 // (legend labels, axis text, gridlines). Chart.js doesn't auto-respect
 // prefers-color-scheme; we wire it explicitly.
+function retintTotalLine() {
+    const color = getComputedStyle(document.documentElement).getPropertyValue('--color-text').trim();
+    performanceChart.data.datasets.forEach(ds => {
+        if (ds.label === 'Total') { ds.borderColor = color; ds.backgroundColor = color; }
+    });
+    performanceChart.update('none');
+}
+
 function applyChartTheme() {
     if (typeof Chart === 'undefined') return;
     const cs = getComputedStyle(document.documentElement);
@@ -3589,7 +3598,7 @@ function setupThemeToggle() {
         document.documentElement.setAttribute('data-theme', next);
         applyChartTheme();
         if (portfolioChart) portfolioChart.update('none');
-        if (performanceChart) performanceChart.update('none');
+        if (performanceChart) retintTotalLine();
     });
 }
 
@@ -3604,7 +3613,7 @@ async function init() {
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
             applyChartTheme();
             if (portfolioChart) portfolioChart.update('none');
-            if (performanceChart) performanceChart.update('none');
+            if (performanceChart) retintTotalLine();
         });
     }
 

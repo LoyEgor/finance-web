@@ -258,7 +258,9 @@ def rent_amount(config, month):
     rule = (config.RECURRING or {}).get("rent_by_month_parity")
     if not rule or not month:
         return None
-    return rule.get("odd" if int(month[5:7]) % 2 else "even")
+    base = rule.get("odd" if int(month[5:7]) % 2 else "even")
+    adjust = ((config.RECURRING or {}).get("rent_adjust_usd") or {}).get(month, 0)
+    return base + adjust if base is not None else None
 
 
 def _period_pair(period):

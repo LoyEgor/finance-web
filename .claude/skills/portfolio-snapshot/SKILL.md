@@ -38,14 +38,16 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
    Physical cash: carry forward from last snapshot unless the user states a change — except
    the rent line (`config.RECURRING.rent_from`), which the orchestrator already lowered by
    the month's rent (`rent_by_month_parity`); never ask about rent or cash.
-   Exchange overview screenshots include no-API sleeve wallets in their totals: a copytrading
-   sleeve held in a stable = overview total of that stable − the API's spot/funding/earn figure.
+   Binance copytrading is fetched (wallet-balance endpoint, `copy_line` in config) — no Binance
+   screenshot at all. A venue with a genuinely no-API sleeve lists it in `screenshot_sleeves`.
    Salary lands on the payout-role venue's line (`config.RECURRING.salary_to`, Zen) as a
    `deposit` of `salary_usd_approx` once per snapshot, whatever day it landed; a broker funding
    is a `move` from that line (its cash channel reports it in the period it settles); the
    line's residual (prev + salary − moves − stated balance) is living spend, booked as a
    `withdraw` (wallet fees included). Salary and rent are MANDATORY every period: `recurring_guard`
-   flags a report missing either; a rule set to 0 in config switches it off — never ask about them. Read the wallet balance off the user's Zen screenshot
+   flags a report missing either; a rule set to 0 in config switches it off — never ask about them.
+   The final message to the user ALWAYS states this month's rent and next month's (the
+   orchestrator prints a `RENT` line) — he pays after the report and must not have to ask. Read the wallet balance off the user's Zen screenshot
    and pass it as `--manual 'Zen/EUR Cash (Zen)=<EUR>EUR'`; money the Zen history shows sent to
    the broker but not yet in the broker's EOD statement is broker cash already — pass
    `--funded <EUR>EUR` and the orchestrator adds it to the broker cash line, books the move now,

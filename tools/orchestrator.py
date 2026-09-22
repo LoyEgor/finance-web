@@ -590,7 +590,11 @@ def run_live(out_path=None, as_of=None, manual=None, funded=None):
                 raise SystemExit("set BINANCE_API_KEY / BINANCE_API_SECRET in tools/.env")
             px = {d["symbol"]: float(d["price"]) for d in mod.public_get("/api/v3/ticker/price")}
             coin_price_usd = lambda code, _px=px, _m=mod: _m.price_usd(code, _px)
-            qty, wallets, balance_manifest = mod.collect(key, secret)
+            qty, wallets, balance_manifest, sleeves = mod.collect(key, secret)
+            copy_line = spec.get("copy_line")
+            if copy_line and sleeves.get("copy", 0) >= config.TOL["dust_usd"]:
+                fetched_items.append({"category": reconcile.COPY_CAT, "source": venue, "name": copy_line,
+                                      "val": round(sleeves["copy"], 2)})
             unpriced = []
             for asset, q in qty.items():
                 if asset.startswith("LD") and asset[2:] in qty:
@@ -748,6 +752,10 @@ def run_live(out_path=None, as_of=None, manual=None, funded=None):
             print(f"  {meta['source']}/{meta['name']}: {label} = {val:,.2f} (--manual)")
         elif meta["source"] == cash_venue and meta["name"] == rent_from and rent:
             val = round(val - rent, 2)
+            y, mo = int(today[:4]), int(today[5:7])
+            nxt = f"{y + (mo == 12):04d}-{(mo % 12) + 1:02d}"
+            print(f"  RENT {today[:7]}: {rent:,.0f} — tell the user; next month {nxt}: "
+                  f"{checks.rent_amount(config, nxt) or 0:,.0f}.")
             print(f"  {rent_from}: {meta['val']:,.0f} - rent {rent:,.0f} = {val:,.0f} "
                   f"(config.RECURRING; say so if the cash differs).")
         candidate_items.append({"category": meta["cat"], "source": meta["source"],

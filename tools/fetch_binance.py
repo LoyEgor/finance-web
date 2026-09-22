@@ -169,9 +169,13 @@ def classify(asset):
 
 
 def collect(key, secret):
+    """-> (qty, wallets, manifest, sleeves). `sleeves` holds wallets the per-asset
+    endpoints cannot see, valued in USDT by /sapi/v1/asset/wallet/balance: today the
+    copy-trading wallet ("copy"), which the app books as one line, not per asset."""
     qty = defaultdict(float)
     wallets = defaultdict(lambda: defaultdict(float))  # asset -> wallet -> qty (for transparency)
     manifest = {}
+    sleeves = {}
 
     def channel(name, fn):
         manifest[name] = {"queried": False, "rows": 0}
@@ -225,12 +229,19 @@ def collect(key, secret):
                 n += 1
         return n
 
+    def do_copy():
+        rows = signed("/sapi/v1/asset/wallet/balance", key, secret, {"quoteAsset": "USDT"})
+        bal = sum(float(r.get("balance", 0)) for r in rows if r.get("walletName") == "Copy Trading")
+        sleeves["copy"] = bal
+        return 1 if bal > 0 else 0
+
     channel("spot", do_spot)
     channel("funding", do_funding)
     channel("earn-flex", do_earn_flex)
     channel("earn-locked", do_earn_locked)
+    channel("copy-trading", do_copy)
 
-    return qty, wallets, manifest
+    return qty, wallets, manifest, sleeves
 
 
 def flows(key, secret, start_ms, end_ms):
@@ -500,7 +511,7 @@ def main():
         return
 
     px = {d["symbol"]: float(d["price"]) for d in public_get("/api/v3/ticker/price")}
-    qty, wallets, manifest = collect(key, secret)
+    qty, wallets, manifest, sleeves = collect(key, secret)
 
     items, unknown = [], []
     for asset, q in qty.items():
@@ -517,9 +528,13 @@ def main():
         items.append({"category": cat, "source": "Binance", "name": name, "asset": asset,
                       "qty": q, "val": val, "wallets": dict(wallets[asset])})
 
+    copy_line = config.VENUES.get("Binance", {}).get("copy_line")
+    if copy_line and sleeves.get("copy", 0) >= config.TOL["dust_usd"]:
+        items.append({"category": "copy", "source": "Binance", "name": copy_line, "asset": "USDT",
+                      "qty": sleeves["copy"], "val": round(sleeves["copy"], 2), "wallets": {"copy-trading": sleeves["copy"]}})
     data = {"source": "Binance", "snapshot_items": items, "unpriced": unknown, "manifest": manifest,
-            "note": "copytrading sleeve NOT included (screenshot); futures wallet not read. "
-                    "unpriced assets are surfaced, NOT dropped from awareness — value them manually."}
+            "note": "futures wallet not read. unpriced assets are surfaced, NOT dropped from "
+                    "awareness — value them manually."}
 
     if args.raw:
         print(json.dumps(data, ensure_ascii=False, indent=2))

@@ -36,7 +36,7 @@ VENUES = {
     "BrokerA":   {"method": "api",        "tool": "fetch_ibkr", "role": "broker",
                   "required_channels": ["trades", "cashtx", "transfers"]},
     "ExchangeB": {"method": "api",        "tool": "fetch_binance",
-                  "screenshot_sleeves": ["copytrading"],   # copier copytrading has no API
+                  "copy_line": "Copytrading",   # snapshot line the API's Copy Trading wallet lands on
                   "required_channels": ["capital-deposit", "capital-withdraw",
                                         "fiat-deposit", "fiat-withdraw", "p2p-sell", "p2p-buy",
                                         "convert"]},
@@ -146,6 +146,7 @@ RECURRING = {
     "rent_by_month_parity": {"odd": 500, "even": 600},
     "rent_from": "USD Cash (Home)",
     "rent_per_month": 1,                # >1 home-cash rent withdraw in a period = duplicate flag
+    "rent_adjust_usd": {},              # one-off deltas on the parity rule, YYYY-MM -> ±USD (overpayment credited next month etc.)
     "living_p2p_usd_approx": 0,         # exchange P2P stable->local-fiat living cash-out (SELL side)
 }
 
