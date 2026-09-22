@@ -235,21 +235,23 @@ def _line_val(items, line):
     return next((i["val"] for i in items if (i["source"], i["name"]) == line), 0.0)
 
 
-def suggest_transfers(period, ibkr, binance, fetched_items, coin_price_usd, config, prebooked=()):
+def suggest_transfers(period, ibkr, binance, fetched_items, coin_price_usd, config, prebooked=(), exits=()):
     """Draft rows in the data/transfers-*.json schema from what the channels DO see:
     broker trades and cash movements, exchange external legs, and the rent/salary
     rules. Internal moves no channel reports (copytrading <-> spot, exchange <->
     exchange) are the skill's job from the residual menu, so a draft is never the
     whole book. A broker deposit is booked as a move FROM the payout wallet's salary
     line — the only place external funding comes from (config role "payout") — unless
-    `prebooked` (see prebooked_funding) already holds it from the previous period."""
+    `prebooked` (see prebooked_funding) already holds it from the previous period, or it
+    matches a line the user just stated as 0 (`exits`: (category, source, name, prev value)) —
+    a closed venue whose money went to the broker is a move FROM that line."""
     out = []
     since, until = period
     month = until[:7]
     dust = config.TOL["dust_usd"]
     cat_of = {(i["source"], i["name"]): i["category"] for i in fetched_items}
     payout = salary_line(config)
-    prebooked = list(prebooked)
+    prebooked, exits = list(prebooked), list(exits)
     salary = config.RECURRING.get("salary_usd_approx")
     if payout and salary:  # one salary per snapshot, whatever day it landed
         out.append({"type": "deposit", "amount": float(salary), "category": "usd",
@@ -286,8 +288,14 @@ def suggest_transfers(period, ibkr, binance, fetched_items, coin_price_usd, conf
                     prebooked.remove(hit)
                     print(f"  {venue} funding {amt:,.2f} ({note}) was booked last period as {hit:,.2f} — not suggested again.")
                     continue
+                src_cat, src = "usd", payout
+                exit_hit = next((e for e in exits if abs(e[3] - amt) <= config.TOL["match_usd"]), None)
+                if exit_hit is not None:
+                    exits.remove(exit_hit)
+                    src_cat, src = exit_hit[0], (exit_hit[1], exit_hit[2])
+                    note += f" — from the closed {src[0]} line"
                 out.append({"type": "move", "amount": round(amt, 2), "note": note,
-                            "from_category": "usd", "from_source": payout[0], "from_name": payout[1],
+                            "from_category": src_cat, "from_source": src[0], "from_name": src[1],
                             "to_category": cash["category"], "to_source": cash["source"], "to_name": cash["name"]})
                 continue
             out.append({"type": "deposit" if amt > 0 else "withdraw", "amount": round(abs(amt), 2), **cash,
@@ -717,10 +725,12 @@ def run_live(out_path=None, as_of=None, manual=None, funded=None):
     stated = parse_manual(manual, fx_map, config)
     manual_keys = set(stated)
     prev_rows = [{"source": m["source"], "name": m["name"], "val": m["val"]} for m in prev["items"].values()]
+    exits = [(m["cat"], m["source"], m["name"], m["val"]) for m in prev["items"].values()
+             if stated.get((m["source"], m["name"]), (None,))[0] == 0 and m["val"] > config.TOL["dust_usd"]]
     suggested = suggest_transfers(
         (since, today), ibkr_ctx and (ibkr_ctx[0], ibkr_ctx[1], ibkr_ctx[2], since, today),
         binance_ctx and (binance_ctx[0], binance_flows), fetched_items, coin_price_usd, config,
-        prebooked_funding(prev["date"][:7], config))
+        prebooked_funding(prev["date"][:7], config), exits)
     if funded:
         # Money the payout wallet already sent to the broker but the EOD statement has
         # not settled: it belongs to the broker cash NOW, and next period's cashtx row
