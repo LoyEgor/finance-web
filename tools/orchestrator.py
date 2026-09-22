@@ -251,7 +251,7 @@ def suggest_transfers(period, ibkr, binance, fetched_items, coin_price_usd, conf
     payout = salary_line(config)
     prebooked = list(prebooked)
     salary = config.RECURRING.get("salary_usd_approx")
-    if payout and salary and checks.payday_in_period(period, config.RECURRING.get("salary_day", 1)):
+    if payout and salary:  # one salary per snapshot, whatever day it landed
         out.append({"type": "deposit", "amount": float(salary), "category": "usd",
                     "source": payout[0], "name": payout[1], "note": "salary"})
     if ibkr:

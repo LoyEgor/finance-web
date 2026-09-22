@@ -16,7 +16,6 @@ BENCHMARKS / RECURRING / TOL / BASE_CCY). Nothing here hard-codes a ticker, venu
 or amount. The reconciliation math (asset_key, adjustments, cat_netflow) is
 imported from reconcile.py — not re-implemented.
 """
-import calendar
 from collections import defaultdict
 
 import reconcile
@@ -262,21 +261,6 @@ def rent_amount(config, month):
     return rule.get("odd" if int(month[5:7]) % 2 else "even")
 
 
-def payday_in_period(period, day):
-    """True when a monthly payday (`day`, clamped to month length) falls in (since, until]."""
-    since, until = period
-    y, m = int(since[:4]), int(since[5:7])
-    while f"{y:04d}-{m:02d}" <= until[:7]:
-        last = calendar.monthrange(y, m)[1]
-        d = f"{y:04d}-{m:02d}-{min(day, last):02d}"
-        if since < d <= until:
-            return True
-        m += 1
-        if m > 12:
-            y, m = y + 1, 1
-    return False
-
-
 def _period_pair(period):
     """ctx['period'] is {'prev_date', 'curr_date'}; the guards take a (since, until) pair."""
     if isinstance(period, dict):
@@ -291,9 +275,9 @@ def recurring_guard(transfers, config, month=None, period=None):
         NO rent withdraw while the month's rule says one is due => MISSING flag.
       - salary: an external deposit into the payout-role venue (broker-role when
         there is none) far from salary_usd_approx => flag (raise/cut/partial month
-        or a mis-entry); NO such deposit while the payday fell in `period` =>
-        MISSING flag. A report is not closed without both; a rule set to 0 in
-        config switches its guard off instead of being restated every month.
+        or a mis-entry); NO such deposit => MISSING flag — one salary per snapshot,
+        whatever day it landed. A report is not closed without both; a rule set to
+        0 in config switches its guard off instead of being restated every month.
 
     Venues are resolved by config role markers, not by literal name.
 
@@ -337,13 +321,12 @@ def recurring_guard(transfers, config, month=None, period=None):
     funding = [t for t in transfers
                if t.get("type") == "deposit" and salary_venue and t.get("source") == salary_venue
                and t.get("category") == reconcile.STABLE_CAT]
-    if salary and period and payday_in_period(period, rec.get("salary_day", 1)) and not funding:
+    if salary and salary_venue and not funding:
         out.append(_finding(
             "recurring_guard", "warn",
-            f"salary ~{salary:,.0f} is NOT booked into {salary_venue} although payday "
-            f"({rec.get('salary_day', 1)}th) fell in {period[0]}..{period[1]} — every report carries it; "
+            f"salary ~{salary:,.0f} is NOT booked into {salary_venue} — every report carries one; "
             f"set config.RECURRING.salary_usd_approx to 0 if the salary stopped.",
-            {"expected": salary, "period": period}))
+            {"expected": salary}))
     for t in funding:
         amt = float(t["amount"])
         if abs(amt - salary) > 0.5 * salary:
@@ -652,7 +635,7 @@ def _self_test():
     cfg = types.SimpleNamespace(
         VENUES={"Broker": {"method": "api", "role": "broker", "required_channels": []},
                 "Home": {"method": "manual", "role": "cash"}},
-        RECURRING={"salary_usd_approx": 3000, "salary_day": 27, "rent_by_month_parity": {"odd": 500, "even": 600},
+        RECURRING={"salary_usd_approx": 3000, "rent_by_month_parity": {"odd": 500, "even": 600},
                    "rent_from": "Home", "rent_per_month": 1},
         ASSET_MAP={},
         STABLES={"USDT", "USDC", "DAI"},
@@ -672,14 +655,12 @@ def _self_test():
     assert not _salary_flagged(salary), "on-target salary -> must NOT flag"
     assert _salary_flagged(salary * 2), "salary far from expected -> MUST flag"
 
-    def _missing(rows, period=("2026-07-27", "2026-08-28")):
-        return {f["message"].split()[0] for f in recurring_guard(rows, cfg, "2026-08", period)
+    def _missing(rows):
+        return {f["message"].split()[0] for f in recurring_guard(rows, cfg, "2026-08")
                 if "NOT booked" in f["message"]}
     rent_row = {"type": "withdraw", "source": "Home", "category": reconcile.STABLE_CAT, "amount": 600, "name": "Home"}
-    assert _missing([]) == {"rent", "salary"}, "no rent, no salary in a payday period -> both MISSING"
+    assert _missing([]) == {"rent", "salary"}, "no rent, no salary -> both MISSING"
     assert _missing([_fund(salary), rent_row]) == set(), "both booked -> nothing missing"
-    assert _missing([rent_row], ("2026-08-28", "2026-09-10")) == set(), "payday outside the period -> no salary flag"
-    assert payday_in_period(("2026-01-31", "2026-02-28"), 31), "payday clamps to the month length"
 
     assert not _is_stable_asset("DAILY DIP FUND", "stocks", cfg), "DAI is not a substring match"
     assert _is_stable_asset("USDT", "crypto", cfg), "a bare stablecoin code is stable"

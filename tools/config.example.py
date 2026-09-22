@@ -136,11 +136,10 @@ BENCHMARKS = ["VOO", "VT"]
 # Keep loose; update when your life changes. Values below are illustrative
 # placeholders — replace with your own in config.py.
 RECURRING = {
-    # Salary is fixed in USD, lands on the payout-role venue's line `salary_to` around
-    # `salary_day`; whatever is not forwarded to the broker is living spend, so the
-    # orchestrator books deposit + moves + a residual withdraw from that line.
+    # Salary is fixed in USD and lands on the payout-role venue's line `salary_to` once
+    # per snapshot, whatever the day; whatever is not forwarded to the broker is living
+    # spend, so the orchestrator books deposit + moves + a residual withdraw from that line.
     "salary_usd_approx": 0,
-    "salary_day": 27,
     "salary_to": "EUR Cash (Payout)",
     # Rent alternates by calendar-month parity and is paid from the home-cash line,
     # so the orchestrator books it (and lowers that line) without asking.

@@ -41,7 +41,7 @@ Run `tools/orchestrator.py` (it wires fetch → gate → reconcile → checks �
    Exchange overview screenshots include no-API sleeve wallets in their totals: a copytrading
    sleeve held in a stable = overview total of that stable − the API's spot/funding/earn figure.
    Salary lands on the payout-role venue's line (`config.RECURRING.salary_to`, Zen) as a
-   `deposit` of `salary_usd_approx` when `salary_day` falls in the period; a broker funding
+   `deposit` of `salary_usd_approx` once per snapshot, whatever day it landed; a broker funding
    is a `move` from that line (its cash channel reports it in the period it settles); the
    line's residual (prev + salary − moves − stated balance) is living spend, booked as a
    `withdraw` (wallet fees included). Salary and rent are MANDATORY every period: `recurring_guard`
