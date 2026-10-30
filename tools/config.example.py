@@ -84,6 +84,10 @@ SNAPSHOT_CONSUMERS = [
 # appear in the snapshot). category ids live in data/categories.json. This is a
 # convenience default; a never-before-seen asset is allowed (the orchestrator
 # asks/guesses its category). NOT an allow-list — do not assume these exist.
+# Broker symbols that are NOT equities, by category id (default: stocks). A T-bill
+# ETF is parked cash, so it belongs in usd, not in the companies sub-bucket.
+BROKER_CATEGORY = {}
+
 ASSET_MAP = {
     "PAXG":  ("safe",   "PAXG (Gold)"),
     "BTC":   ("crypto", "BTC (Bitcoin)"),
@@ -106,7 +110,7 @@ STABLES = {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "RWUSD"}
 # and classifyStockItem — keep the two tables in lockstep.
 ETF_REGION = {t: "us" for t in (
     "VOO SPY IVV SPLG VTI ITOT SCHB RSP QQQ QQQM DIA VUG IWF SCHG VTV IWD SCHV "
-    "VYM SCHD DGRO HDV IWM VB IJR VO IJH SCHM XLK VGT SOXX SMH DRAM PPA SPMO "
+    "VYM SCHD DGRO HDV IWM VB IJR VO IJH SCHM XLK VGT SOXX SMH DRAM PPA SPMO USMV XLP "
     # global funds are scored with the US sleeve, as in the app
     "VT ACWI VEA IEFA VWO IEMG EEM CSPX SXR8 SWDA IWDA EUNL EIMI VWCE").split()}
 ETF_REGION.update({t: "europe" for t in (

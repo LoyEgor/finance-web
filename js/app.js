@@ -70,6 +70,7 @@ const ETF_REGION = {
     VYM: 'us', SCHD: 'us', DGRO: 'us', HDV: 'us',
     IWM: 'us', VB: 'us', IJR: 'us', VO: 'us', IJH: 'us', SCHM: 'us',
     XLK: 'us', VGT: 'us', SOXX: 'us', SMH: 'us', DRAM: 'us', PPA: 'us', SPMO: 'us',
+    USMV: 'us', XLP: 'us',
     // Global (merged into us)
     VT: 'us', ACWI: 'us', VEA: 'us', IEFA: 'us', VWO: 'us', IEMG: 'us', EEM: 'us',
     CSPX: 'us', SXR8: 'us', SWDA: 'us', IWDA: 'us', EUNL: 'us', EIMI: 'us', VWCE: 'us',

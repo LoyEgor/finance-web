@@ -330,8 +330,17 @@ def suggest_transfers(period, ibkr, binance, fetched_items, coin_price_usd, conf
                     val += float(r.get("fee") or 0.0)
                 if val < dust:
                     continue
-                out.append({"type": kind, "amount": round(val, 2), **usdt,
-                            "note": f"{r.get('source') or ''} {label}".strip()})
+                note = f"{r.get('source') or ''} {label}".strip()
+                exit_hit = kind == "deposit" and next(
+                    (e for e in exits if abs(e[3] - val) <= config.TOL["match_usd"]), None)
+                if exit_hit:
+                    exits.remove(exit_hit)
+                    out.append({"type": "move", "amount": round(val, 2),
+                                "note": f"{note} — from the closed {exit_hit[1]} line",
+                                "from_category": exit_hit[0], "from_source": exit_hit[1], "from_name": exit_hit[2],
+                                "to_category": usdt["category"], "to_source": usdt["source"], "to_name": usdt["name"]})
+                    continue
+                out.append({"type": kind, "amount": round(val, 2), **usdt, "note": note})
     rent = checks.rent_amount(config, month)
     cash_venue = checks._venue_by_role(config, "cash")
     rent_from = config.RECURRING.get("rent_from")

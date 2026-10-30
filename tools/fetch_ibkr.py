@@ -224,7 +224,9 @@ def to_snapshot_items(data, venue="IBKR"):
     for p in data["positions"]:
         if p["assetCategory"] == "CASH":
             continue  # cash is taken from CashReport below; emitting both double-counts it
-        items.append({"category": "stocks", "source": venue, "name": p["symbol"],  # missing category → stocks
+        import config
+        cat = getattr(config, "BROKER_CATEGORY", {}).get(p["symbol"], "stocks")
+        items.append({"category": cat, "source": venue, "name": p["symbol"],
                       "val": p["value_usd"], "qty": p["quantity"], "unrealizedPnl": p["unrealizedPnl"]})
     # USD is the base currency; consolidate ALL broker cash (any currency) into one USD line.
     total = data["base_cash"]
