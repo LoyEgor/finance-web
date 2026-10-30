@@ -785,6 +785,15 @@ def run_live(out_path=None, as_of=None, manual=None, funded=None):
                          + " — a NEW line is added by hand in the snapshot file, not by override.")
 
     curr = _snapshot_from_items(candidate_items, today, curr_month=today[:7])
+    held = {(m["source"], m["name"]) for m in prev["items"].values()}
+    fresh = [i["name"] for i in fetched_items if i["category"] == "stocks"
+             and (i["source"], i["name"]) not in held and config.stock_sub_bucket(i["name"]) == "companies"]
+    if fresh:
+        extra_findings.append(checks._finding(
+            "new_symbol", "warn",
+            f"new broker symbol(s) {', '.join(fresh)} land in the companies sub-bucket: an ETF goes into "
+            "ETF_REGION (config.py AND js/app.js), a non-equity (T-bills, bonds) into config.BROKER_CATEGORY.",
+            {"symbols": fresh}))
 
     groups = reconcile.load_groups()
     raw = reconcile.transfers_for_period(groups, prev["date"], curr["date"])
